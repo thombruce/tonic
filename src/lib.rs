@@ -311,11 +311,22 @@ fn transfer_includes(repo: &Repo, worktree: &Path, cfg: &Config) -> Result<()> {
             continue;
         }
         // ponytail: glob is top-level/relative, not full gitignore semantics
-        // (e.g. bare `node_modules` won't match at every depth). Swap in the
-        // `ignore` crate if real gitignore matching is needed.
+        // (e.g. bare `node_modules` won't match at every depth). It also globs
+        // the whole absolute path, so a `[ * ?` metacharacter in a *parent* dir
+        // name mis-parses and matches nothing. Swap in the `ignore` crate if
+        // either ceiling bites.
         let full = source.join(pattern);
         let mode = cfg.mode_for(pattern);
-        for entry in glob::glob(&full.to_string_lossy())?.flatten() {
+        // A malformed pattern shouldn't abort mid-add after the worktree exists;
+        // warn and skip that line instead.
+        let entries = match glob::glob(&full.to_string_lossy()) {
+            Ok(entries) => entries,
+            Err(err) => {
+                eprintln!("warning: skipping invalid .worktreeinclude pattern '{pattern}': {err}");
+                continue;
+            }
+        };
+        for entry in entries.flatten() {
             let rel = entry.strip_prefix(&source).unwrap_or(&entry);
             // Only transfer gitignored files — never fork a tracked/committed
             // file into the worktree. Matches Claude/worktrunk's guardrail.
