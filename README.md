@@ -31,8 +31,9 @@ system < global < local precedence):
 3. `<gitdir>/tonic.toml` — per-repo, private (untracked, lives inside `.git/`)
 
 ```toml
-# Path template for new worktrees, resolved relative to the repo's parent dir.
-# Placeholders: {repo}, {branch}. Default: "{repo}.git/{branch}".
+# Path template for new worktrees. Placeholders: {repo}, {branch}.
+# Resolved relative to the repo's parent dir (normal repo) or the bare dir
+# itself (bare repo). Default: "{repo}.git/{branch}" normal, "{branch}" bare.
 worktree_path = "{repo}/.worktrees/{branch}"
 
 # Per-pattern transfer mode for entries listed in .worktreeinclude.
@@ -66,8 +67,14 @@ the gitignored files/dirs copied or symlinked into each new worktree:
 node_modules
 ```
 
+## Bare repositories
+
+`tonic` works from inside a bare repo (e.g. a `git clone --bare`). New worktrees
+default to siblings inside the bare dir — `barerepo.git/main`,
+`barerepo.git/feature` — and `.worktreeinclude` is read from the bare dir itself.
+
 ## Not yet supported
 
-- Bare repositories (the `barerepo.git/main` sibling layout)
 - Full gitignore glob semantics (patterns are top-level/relative, not recursive)
 - Windows symlinks (symlink mode is unix-only)
+- Configurable `.worktreeinclude` source worktree in bare repos

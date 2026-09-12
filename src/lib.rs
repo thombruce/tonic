@@ -49,7 +49,7 @@ impl Config {
         let global = dirs::config_dir().map(|d| d.join("tonic/config.toml"));
         let chain = [
             global,
-            Some(repo.root.join("tonic.toml")),
+            repo.root.as_ref().map(|r| r.join("tonic.toml")),
             Some(repo.git_dir.join("tonic.toml")),
         ];
         for path in chain.into_iter().flatten() {
@@ -92,27 +92,62 @@ impl Config {
 // ---------------------------------------------------------------------------
 
 struct Repo {
-    root: PathBuf,
+    /// Main working-tree root. `None` for a bare repo (no working tree).
+    root: Option<PathBuf>,
+    /// The common git dir: `.git` for a normal repo, the bare dir itself for a
+    /// bare repo.
     git_dir: PathBuf,
     name: String,
+    bare: bool,
 }
 
 impl Repo {
     fn discover() -> Result<Repo> {
-        // ponytail: assumes a normal (non-bare) checkout; --show-toplevel is
-        // empty in a bare repo. Handle bare layout when we actually support it.
-        let root = git_capture(None, &["rev-parse", "--show-toplevel"])?;
-        if root.is_empty() {
-            bail!("not inside a git worktree (bare repos not supported yet)");
-        }
-        let root = PathBuf::from(root);
-        let common = git_capture(Some(&root), &["rev-parse", "--git-common-dir"])?;
-        let git_dir = abs(&root, Path::new(&common));
-        let name = root
+        let bare = git_capture(None, &["rev-parse", "--is-bare-repository"])? == "true";
+        // --show-toplevel errors in a bare repo, so only ask when not bare.
+        let root = if bare {
+            None
+        } else {
+            let toplevel = git_capture(None, &["rev-parse", "--show-toplevel"])?;
+            (!toplevel.is_empty()).then(|| PathBuf::from(toplevel))
+        };
+        // --git-common-dir is relative to the dir git ran in.
+        let here = root.clone().map(Ok).unwrap_or_else(std::env::current_dir)?;
+        let common = git_capture(Some(&here), &["rev-parse", "--git-common-dir"])?;
+        let git_dir = abs(&here, Path::new(&common));
+        // --git-common-dir is often ".", leaving "/./" in derived paths; clean it.
+        let git_dir = std::fs::canonicalize(&git_dir).unwrap_or(git_dir);
+        // Name from the working tree, else the bare dir with a trailing ".git"
+        // stripped (barerepo.git -> barerepo).
+        let dir = root.as_deref().unwrap_or(&git_dir);
+        let name = dir
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
+            .map(|n| n.to_string_lossy().trim_end_matches(".git").to_string())
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "repo".into());
-        Ok(Repo { root, git_dir, name })
+        Ok(Repo { root, git_dir, name, bare })
+    }
+
+    /// Directory to run git subcommands from.
+    fn cwd(&self) -> &Path {
+        self.root.as_deref().unwrap_or(&self.git_dir)
+    }
+
+    /// Directory to read `.worktreeinclude` from and copy/symlink entries out of.
+    /// ponytail: for a bare repo this is the bare dir itself. Add a configurable
+    /// source worktree if people want to copy from a specific checkout.
+    fn source(&self) -> &Path {
+        self.root.as_deref().unwrap_or(&self.git_dir)
+    }
+}
+
+/// Base dir that a `worktree_path` template resolves against: the parent of the
+/// working tree for a normal repo, or the bare dir itself for a bare repo (so
+/// worktrees land as siblings inside `barerepo.git/`).
+fn worktree_base(root: Option<&Path>, git_dir: &Path) -> PathBuf {
+    match root {
+        Some(r) => r.parent().unwrap_or(r).to_path_buf(),
+        None => git_dir.to_path_buf(),
     }
 }
 
@@ -124,17 +159,15 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
 
-    let template = cfg
-        .worktree_path
-        .as_deref()
-        .unwrap_or("{repo}.git/{branch}");
+    let default_template = if repo.bare { "{branch}" } else { "{repo}.git/{branch}" };
+    let template = cfg.worktree_path.as_deref().unwrap_or(default_template);
     let rendered = render(template, &[("repo", &repo.name), ("branch", branch)]);
     let path = {
         let p = PathBuf::from(&rendered);
         if p.is_absolute() {
             p
         } else {
-            repo.root.parent().unwrap_or(&repo.root).join(p)
+            worktree_base(repo.root.as_deref(), &repo.git_dir).join(p)
         }
     };
     if path.exists() {
@@ -148,7 +181,7 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
     } else {
         args.extend([&path_str, branch]);
     }
-    git_run(&repo.root, &args)?;
+    git_run(repo.cwd(), &args)?;
 
     transfer_includes(&repo, &path, &cfg)?;
     run_hooks(&cfg, "post_create", &repo, branch, &path)?;
@@ -165,7 +198,7 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
 
-    let list = git_capture(Some(&repo.root), &["worktree", "list", "--porcelain"])?;
+    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
     let path = parse_worktree(&list, branch)
         .ok_or_else(|| anyhow!("no worktree checked out for branch '{branch}'"))?;
 
@@ -177,12 +210,12 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         args.push("--force");
     }
     args.push(&path_str);
-    git_run(&repo.root, &args)?;
+    git_run(repo.cwd(), &args)?;
 
     if delete_branch {
         // -d refuses unmerged branches; -f opts into -D's force delete.
         let flag = if force { "-D" } else { "-d" };
-        git_run(&repo.root, &["branch", flag, branch])?;
+        git_run(repo.cwd(), &["branch", flag, branch])?;
     }
 
     println!("removed worktree: {}", path.display());
@@ -195,7 +228,7 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
 
 pub fn list() -> Result<()> {
     let repo = Repo::discover()?;
-    let out = git_capture(Some(&repo.root), &["worktree", "list", "--porcelain"])?;
+    let out = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
     for w in parse_worktrees(&out) {
         println!("{}  [{}]", w.path.display(), w.label);
     }
@@ -241,7 +274,8 @@ fn parse_worktree(porcelain: &str, branch: &str) -> Option<PathBuf> {
 }
 
 fn transfer_includes(repo: &Repo, worktree: &Path, cfg: &Config) -> Result<()> {
-    let list = repo.root.join(".worktreeinclude");
+    let source = repo.source();
+    let list = source.join(".worktreeinclude");
     if !list.exists() {
         return Ok(());
     }
@@ -254,10 +288,10 @@ fn transfer_includes(repo: &Repo, worktree: &Path, cfg: &Config) -> Result<()> {
         // ponytail: glob is top-level/relative, not full gitignore semantics
         // (e.g. bare `node_modules` won't match at every depth). Swap in the
         // `ignore` crate if real gitignore matching is needed.
-        let full = repo.root.join(pattern);
+        let full = source.join(pattern);
         let mode = cfg.mode_for(pattern);
         for entry in glob::glob(&full.to_string_lossy())?.flatten() {
-            let rel = entry.strip_prefix(&repo.root).unwrap_or(&entry);
+            let rel = entry.strip_prefix(source).unwrap_or(&entry);
             let dest = worktree.join(rel);
             transfer(&entry, &dest, mode)
                 .with_context(|| format!("transferring {}", rel.display()))?;
@@ -384,6 +418,20 @@ mod tests {
             hooks: None,
         });
         assert_eq!(base.worktree_path.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn worktree_base_normal_vs_bare() {
+        // normal: base is the parent of the working tree
+        assert_eq!(
+            worktree_base(Some(Path::new("/src/myrepo")), Path::new("/src/myrepo/.git")),
+            PathBuf::from("/src")
+        );
+        // bare: base is the bare dir itself (siblings land inside it)
+        assert_eq!(
+            worktree_base(None, Path::new("/src/myrepo.git")),
+            PathBuf::from("/src/myrepo.git")
+        );
     }
 
     #[test]
