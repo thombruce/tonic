@@ -133,12 +133,35 @@ impl Repo {
         self.root.as_deref().unwrap_or(&self.git_dir)
     }
 
-    /// Directory to read `.worktreeinclude` from and copy/symlink entries out of.
-    /// ponytail: for a bare repo this is the bare dir itself. Add a configurable
-    /// source worktree if people want to copy from a specific checkout.
-    fn source(&self) -> &Path {
-        self.root.as_deref().unwrap_or(&self.git_dir)
+}
+
+/// Directory to source `.worktreeinclude` entries from. For a normal repo (or
+/// when invoked inside a worktree) that's the current working tree. For a bare
+/// repo invoked from the bare dir there is no working tree, so fall back to the
+/// main/ then master/ worktree; `None` if neither exists yet.
+fn resolve_source(repo: &Repo) -> Result<Option<PathBuf>> {
+    if let Some(root) = &repo.root {
+        return Ok(Some(root.clone()));
     }
+    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+    for branch in ["main", "master"] {
+        if let Some(path) = parse_worktree(&list, branch) {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+/// True if `rel` (relative to `dir`) is gitignored.
+fn is_ignored(dir: &Path, rel: &Path) -> bool {
+    // check-ignore exits 0 when ignored, 1 when not — can't use git_run.
+    Command::new("git")
+        .args(["check-ignore", "--quiet"])
+        .arg(rel)
+        .current_dir(dir)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Base dir that a `worktree_path` template resolves against: the parent of the
@@ -274,7 +297,9 @@ fn parse_worktree(porcelain: &str, branch: &str) -> Option<PathBuf> {
 }
 
 fn transfer_includes(repo: &Repo, worktree: &Path, cfg: &Config) -> Result<()> {
-    let source = repo.source();
+    let Some(source) = resolve_source(repo)? else {
+        return Ok(());
+    };
     let list = source.join(".worktreeinclude");
     if !list.exists() {
         return Ok(());
@@ -291,7 +316,12 @@ fn transfer_includes(repo: &Repo, worktree: &Path, cfg: &Config) -> Result<()> {
         let full = source.join(pattern);
         let mode = cfg.mode_for(pattern);
         for entry in glob::glob(&full.to_string_lossy())?.flatten() {
-            let rel = entry.strip_prefix(source).unwrap_or(&entry);
+            let rel = entry.strip_prefix(&source).unwrap_or(&entry);
+            // Only transfer gitignored files — never fork a tracked/committed
+            // file into the worktree. Matches Claude/worktrunk's guardrail.
+            if !is_ignored(&source, rel) {
+                continue;
+            }
             let dest = worktree.join(rel);
             transfer(&entry, &dest, mode)
                 .with_context(|| format!("transferring {}", rel.display()))?;

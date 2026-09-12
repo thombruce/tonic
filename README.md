@@ -67,14 +67,21 @@ the gitignored files/dirs copied or symlinked into each new worktree:
 node_modules
 ```
 
+Only files that are **both** matched here **and** gitignored are transferred —
+tracked files are never copied, so you can't accidentally fork a committed file.
+
+Entries are sourced from the working tree you invoke `tonic` in. In a bare repo
+invoked from the bare dir (no working tree), tonic sources from the `main/` then
+`master/` worktree.
+
 ## Bare repositories
 
 `tonic` works from inside a bare repo (e.g. a `git clone --bare`). New worktrees
 default to siblings inside the bare dir — `barerepo.git/main`,
-`barerepo.git/feature` — and `.worktreeinclude` is read from the bare dir itself.
+`barerepo.git/feature` — and, when invoked from the bare dir, `.worktreeinclude`
+is sourced from the `main/` (then `master/`) worktree.
 
 ## Not yet supported
 
 - Full gitignore glob semantics (patterns are top-level/relative, not recursive)
 - Windows symlinks (symlink mode is unix-only)
-- Configurable `.worktreeinclude` source worktree in bare repos
