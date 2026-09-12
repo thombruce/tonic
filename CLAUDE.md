@@ -13,7 +13,7 @@ cargo test <name>        # run a single test, e.g. cargo test worktree_base
 cargo run -- add -b foo  # run the CLI (args after --)
 ```
 
-There is no lint/format config beyond defaults; use `cargo fmt` / `cargo clippy` if needed.
+CI (`.github/workflows/ci.yml`) runs `cargo test` and `cargo clippy -- -D warnings` on every push/PR to `main` — clippy warnings fail the build, so run `cargo clippy -- -D warnings` before pushing.
 
 ## Architecture
 
@@ -32,6 +32,12 @@ Two source files. `src/main.rs` is a thin `clap` shell: each subcommand is a `Cm
 **`.worktreeinclude` transfer** (`transfer_includes`): source dir comes from `resolve_source` — the working tree normally, or for a bare-dir invocation the `main/` then `master/` worktree. Each line is a glob (top-level/relative, via the `glob` crate — *not* full gitignore semantics). A file is transferred only if it is **both** matched and gitignored (`is_ignored`); tracked files are never copied. Per-pattern `mode` (copy/symlink, default copy) comes from config `[[include]]`, keyed by matching the `.worktreeinclude` pattern string.
 
 **Hooks** run via `sh -c` in the new worktree dir. Events: `post_create` (after add), `pre_remove` (before rm). Command strings are templated with `{repo}`, `{branch}`, `{worktree_path}` (see `render`).
+
+## Packaging & release
+
+The crate is **published as `git-tonic`** (the name `tonic` was taken on crates.io by the gRPC crate); the installed binary is still `tonic` via `[[bin]]`. Keep `[lib] name = "tonic"` so `main.rs`'s `tonic::` paths resolve.
+
+Releases are cut by pushing a `vX.Y.Z` tag (`.github/workflows/release.yml`): it builds macOS/Linux × x86_64/aarch64 binaries (aarch64-linux via `cross`), attaches them to a GitHub Release, runs `cargo publish`, and bumps `Formula/tonic.rb` in `thombruce/homebrew-tap`. Needs repo secrets `CARGO_REGISTRY_TOKEN` and `HOMEBREW_TAP_TOKEN`. Bump `version` in `Cargo.toml` to match the tag before tagging.
 
 ## Testing conventions
 
