@@ -8,6 +8,16 @@ configure where worktrees are created, and runs lifecycle hooks on create and
 remove — so per-worktree dev databases, containers, or build dirs can spin up
 and tear down cleanly.
 
+## Installation
+
+```
+brew install thombruce/tap/tonic   # macOS / Linux (Homebrew)
+cargo install git-tonic            # from crates.io
+```
+
+The crate is published as `git-tonic` (the name `tonic` was taken on crates.io),
+but the installed binary is `tonic`.
+
 ## Commands
 
 ```

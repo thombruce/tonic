@@ -1,0 +1,188 @@
+name: Release
+
+# Tag `vX.Y.Z` to cut a release. Builds binaries for macOS + Linux (x86_64 and
+# aarch64), attaches them to a GitHub Release, publishes the crate to crates.io
+# (as `git-tonic`), and bumps the Homebrew formula in thombruce/homebrew-tap.
+#
+# The published crate is `git-tonic` but the binary it installs is `tonic`.
+#
+# Required repository secrets:
+#   CARGO_REGISTRY_TOKEN  - crates.io API token (publish-crate job)
+#   HOMEBREW_TAP_TOKEN    - PAT with write access to thombruce/homebrew-tap
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - id: parse
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: setup
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          BINARY=target/${{ matrix.target }}/release/tonic
+          ARCHIVE=tonic-v$VERSION-${{ matrix.target }}.tar.gz
+          tar -czf "$ARCHIVE" -C "$(dirname $BINARY)" "$(basename $BINARY)"
+          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: [setup, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Compute formula vars
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          BASE="https://github.com/thombruce/tonic/releases/download/${TAG}"
+          DESC=$(grep -m1 '^description' Cargo.toml | sed -E 's/^description *= *"(.*)"/\1/')
+          {
+            echo "VERSION=$VERSION"
+            echo "DESC=$DESC"
+            echo "SHA256_X86_MAC=$(curl -sL ${BASE}/tonic-v${VERSION}-x86_64-apple-darwin.tar.gz | sha256sum | cut -d' ' -f1)"
+            echo "SHA256_ARM_MAC=$(curl -sL ${BASE}/tonic-v${VERSION}-aarch64-apple-darwin.tar.gz | sha256sum | cut -d' ' -f1)"
+            echo "SHA256_X86_LINUX=$(curl -sL ${BASE}/tonic-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz | sha256sum | cut -d' ' -f1)"
+            echo "SHA256_ARM_LINUX=$(curl -sL ${BASE}/tonic-v${VERSION}-aarch64-unknown-linux-gnu.tar.gz | sha256sum | cut -d' ' -f1)"
+          } >> "$GITHUB_ENV"
+
+      - name: Clone homebrew-tap
+        run: |
+          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/thombruce/homebrew-tap.git
+
+      - name: Update formula
+        run: |
+          cat > homebrew-tap/Formula/tonic.rb << EOF
+          class Tonic < Formula
+            desc "${DESC}"
+            homepage "https://github.com/thombruce/tonic"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/thombruce/tonic/releases/download/v#{version}/tonic-v#{version}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA256_ARM_MAC}"
+              end
+              on_intel do
+                url "https://github.com/thombruce/tonic/releases/download/v#{version}/tonic-v#{version}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA256_X86_MAC}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/thombruce/tonic/releases/download/v#{version}/tonic-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA256_ARM_LINUX}"
+              end
+              on_intel do
+                url "https://github.com/thombruce/tonic/releases/download/v#{version}/tonic-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA256_X86_LINUX}"
+              end
+            end
+
+            def install
+              bin.install "tonic"
+            end
+
+            test do
+              system "#{bin}/tonic", "--version"
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/tonic.rb
+          git diff --cached --quiet || git commit -m "chore: update tonic to v${VERSION}"
+          git push
