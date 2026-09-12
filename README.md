@@ -1,0 +1,73 @@
+# tonic
+
+A git worktree companion — `git` and `tonic`.
+
+A small CLI that makes git worktrees pleasant: it respects `.worktreeinclude`
+(copying or symlinking your gitignored files into new worktrees), lets you
+configure where worktrees are created, and runs lifecycle hooks on create and
+remove — so per-worktree dev databases, containers, or build dirs can spin up
+and tear down cleanly.
+
+## Commands
+
+```
+tonic add <branch> [-b]        # create a worktree for <branch> (-b: new branch)
+tonic list                     # list worktrees
+tonic rm  <branch> [-f] [-d]   # remove a worktree (-f: force, -d: also delete branch)
+```
+
+`add` resolves the worktree path from config, runs `git worktree add`, transfers
+`.worktreeinclude` entries (copy or symlink per pattern), then runs `post_create`
+hooks. `rm` runs `pre_remove` hooks, removes the worktree, and optionally deletes
+the branch.
+
+## Configuration
+
+Config is TOML, merged from a chain (later wins per key, mirroring git's
+system < global < local precedence):
+
+1. `~/.config/tonic/config.toml` — global defaults
+2. `<repo>/tonic.toml` — shared, committed
+3. `<gitdir>/tonic.toml` — per-repo, private (untracked, lives inside `.git/`)
+
+```toml
+# Path template for new worktrees, resolved relative to the repo's parent dir.
+# Placeholders: {repo}, {branch}. Default: "{repo}.git/{branch}".
+worktree_path = "{repo}/.worktrees/{branch}"
+
+# Per-pattern transfer mode for entries listed in .worktreeinclude.
+# Default mode is "copy".
+[[include]]
+pattern = "node_modules"
+mode = "symlink"
+
+[[include]]
+pattern = ".env"
+mode = "copy"
+
+# Lifecycle hooks. Placeholders: {repo}, {branch}, {worktree_path}.
+# Events: post_create, pre_remove. Run via `sh -c` in the worktree dir.
+[[hooks]]
+event = "post_create"
+run = "createdb tonic_{branch}"
+
+[[hooks]]
+event = "pre_remove"
+run = "dropdb tonic_{branch}"
+```
+
+### `.worktreeinclude`
+
+One glob per line (relative to the repo root; `#` comments allowed). These are
+the gitignored files/dirs copied or symlinked into each new worktree:
+
+```
+.env
+node_modules
+```
+
+## Not yet supported
+
+- Bare repositories (the `barerepo.git/main` sibling layout)
+- Full gitignore glob semantics (patterns are top-level/relative, not recursive)
+- Windows symlinks (symlink mode is unix-only)
