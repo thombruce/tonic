@@ -1,6 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::fd::AsFd;
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
@@ -276,7 +278,10 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
     transfer_includes(&repo, &path, &cfg)?;
     run_hooks(&cfg, "post_create", &repo, branch, &path)?;
 
-    println!("worktree ready: {}", path.display());
+    // Human status → stderr; the worktree path → stdout only, so the shell
+    // integration (`tonic shell-init`) can `cd "$(tonic add ...)"`.
+    eprintln!("created worktree for {branch}");
+    println!("{}", path.display());
     Ok(())
 }
 
@@ -308,7 +313,7 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         git_run(repo.cwd(), &["branch", flag, branch])?;
     }
 
-    println!("removed worktree: {}", path.display());
+    eprintln!("removed worktree: {}", path.display());
     Ok(())
 }
 
@@ -324,6 +329,67 @@ pub fn list() -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// cd / shell integration
+// ---------------------------------------------------------------------------
+
+/// Print the path of the worktree checked out for `branch` to stdout, for use
+/// as `cd "$(tonic cd <branch>)"` (see `shell_init`).
+pub fn cd(branch: &str) -> Result<()> {
+    let repo = Repo::discover()?;
+    let out = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+    let path = parse_worktree(&out, branch)
+        .ok_or_else(|| anyhow!("no worktree checked out for branch '{branch}'"))?;
+    println!("{}", path.display());
+    Ok(())
+}
+
+/// Print a shell function that wraps `tonic` so that `add`/`cd` change the
+/// shell's directory. tonic can't cd its parent shell itself (it's a child
+/// process); the sourced function captures the path tonic prints and cd's.
+pub fn shell_init(shell: &str) -> Result<()> {
+    let script = shell_wrapper(shell)
+        .ok_or_else(|| anyhow!("unsupported shell '{shell}' (expected bash, zsh, or fish)"))?;
+    print!("{script}");
+    Ok(())
+}
+
+fn shell_wrapper(shell: &str) -> Option<&'static str> {
+    match shell {
+        "bash" | "zsh" => Some(BASH_ZSH_WRAPPER),
+        "fish" => Some(FISH_WRAPPER),
+        _ => None,
+    }
+}
+
+// `add`/`cd` print the worktree path on stdout (status is on stderr), so the
+// wrapper captures stdout and cd's on success; everything else passes through.
+// Uses `local`, so this is bash/zsh only — not portable to a pure POSIX sh.
+const BASH_ZSH_WRAPPER: &str = r#"tonic() {
+    case "$1" in
+        add|cd)
+            local __tonic_dir
+            __tonic_dir="$(command tonic "$@")" || return
+            [ -n "$__tonic_dir" ] && cd "$__tonic_dir"
+            ;;
+        *)
+            command tonic "$@"
+            ;;
+    esac
+}
+"#;
+
+const FISH_WRAPPER: &str = r#"function tonic
+    switch $argv[1]
+        case add cd
+            set -l __tonic_dir (command tonic $argv); or return
+            test -n "$__tonic_dir"; and cd $__tonic_dir
+        case '*'
+            command tonic $argv
+    end
+end
+"#;
 
 struct Worktree {
     path: PathBuf,
@@ -444,11 +510,13 @@ fn run_hooks(cfg: &Config, event: &str, repo: &Repo, branch: &str, worktree: &Pa
     let vars = [("repo", repo.name.as_str()), ("branch", branch), ("worktree_path", &wt)];
     for hook in cfg.hooks.as_deref().unwrap_or(&[]).iter().filter(|h| h.event == event) {
         let cmd = render(&hook.run, &vars);
-        println!("[{event}] {cmd}");
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .current_dir(worktree)
+        eprintln!("[{event}] {cmd}");
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(&cmd).current_dir(worktree);
+        // Hook stdout → our stderr (streamed, so long hooks like npm install
+        // stay live) so it can't pollute the worktree path on tonic's stdout.
+        redirect_stdout_to_stderr(&mut command);
+        let status = command
             .status()
             .with_context(|| format!("running hook: {cmd}"))?;
         if !status.success() {
@@ -479,16 +547,29 @@ fn abs(base: &Path, p: &Path) -> PathBuf {
 }
 
 fn git_run(dir: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .status()
-        .context("running git")?;
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(dir);
+    // git worktree add prints "HEAD is now at ..." to stdout; keep it (and any
+    // other git chatter) off tonic's stdout so the worktree path stays clean.
+    redirect_stdout_to_stderr(&mut cmd);
+    let status = cmd.status().context("running git")?;
     if !status.success() {
         bail!("git {} failed", args.join(" "));
     }
     Ok(())
 }
+
+/// Route a child's stdout to our stderr, so subprocess chatter never lands on
+/// tonic's stdout (which carries the worktree path for shell `cd` integration).
+#[cfg(unix)]
+fn redirect_stdout_to_stderr(cmd: &mut Command) {
+    if let Ok(fd) = std::io::stderr().as_fd().try_clone_to_owned() {
+        cmd.stdout(std::process::Stdio::from(fd));
+    }
+}
+
+#[cfg(not(unix))]
+fn redirect_stdout_to_stderr(_cmd: &mut Command) {}
 
 fn git_capture(dir: Option<&Path>, args: &[&str]) -> Result<String> {
     let mut cmd = Command::new("git");
@@ -506,6 +587,14 @@ fn git_capture(dir: Option<&Path>, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_wrapper_per_shell() {
+        assert!(shell_wrapper("zsh").unwrap().contains("tonic()"));
+        assert!(shell_wrapper("bash").unwrap().contains("tonic()"));
+        assert!(shell_wrapper("fish").unwrap().contains("function tonic"));
+        assert!(shell_wrapper("elvish").is_none());
+    }
 
     #[test]
     fn render_substitutes() {

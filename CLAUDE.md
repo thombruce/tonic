@@ -37,6 +37,8 @@ Two source files. `src/main.rs` is a thin `clap` shell: each subcommand is a `Cm
 
 **Hooks** run via `sh -c` in the new worktree dir. Events: `post_create` (after add), `pre_remove` (before rm). Command strings are templated with `{repo}`, `{branch}`, `{worktree_path}` (see `render`).
 
+**Output contract.** Human status goes to **stderr**; **stdout** carries machine-readable output only — the resolved worktree path for `add`/`cd`, the listing for `list`. `git_run` and hooks route their child stdout to stderr (`redirect_stdout_to_stderr`, unix-only) because e.g. `git worktree add` prints "HEAD is now at …" to stdout. This is what lets the `shell-init` wrapper do `cd "$(tonic add …)"` — so don't `println!` status text, use `eprintln!`.
+
 ## Packaging & release
 
 The crate is **published as `git-tonic`** (the name `tonic` was taken on crates.io by the gRPC crate); the installed binary is still `tonic` via `[[bin]]`. Keep `[lib] name = "tonic"` so `main.rs`'s `tonic::` paths resolve.
