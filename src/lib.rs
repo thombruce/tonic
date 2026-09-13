@@ -93,11 +93,16 @@ impl Config {
 // ---------------------------------------------------------------------------
 
 struct Repo {
-    /// Main working-tree root. `None` for a bare repo (no working tree).
+    /// The working tree tonic was invoked in. `None` when invoked from a bare
+    /// dir (no working tree). Used as the `.worktreeinclude` source and the dir
+    /// to run git from — not for identity, which must not vary by worktree.
     root: Option<PathBuf>,
     /// The common git dir: `.git` for a normal repo, the bare dir itself for a
     /// bare repo.
     git_dir: PathBuf,
+    /// The repository's main worktree (or the bare dir if bare). Identity and
+    /// worktree layout derive from this, so they're the same from any worktree.
+    main: PathBuf,
     name: String,
     bare: bool,
 }
@@ -121,23 +126,35 @@ impl Repo {
         // --git-common-dir is often ".", leaving "/./" in derived paths; clean it.
         let git_dir = std::fs::canonicalize(&git_dir).unwrap_or(git_dir);
 
-        // The repository is bare when its common git dir is not a `.git` inside
-        // a working tree. Derived from git_dir (the repo identity), so it's
-        // correct even when invoked from inside a linked worktree.
-        let bare = git_dir.file_name().and_then(|n| n.to_str()) != Some(".git");
+        // `core.bare` in the shared config is the authoritative bare flag and is
+        // independent of cwd — unlike `--is-bare-repository`, which is false
+        // inside a linked worktree of a bare repo. Reading it also avoids
+        // misclassifying --separate-git-dir / submodule repos as bare.
+        let bare = is_bare(&git_dir);
 
-        // Repo name and worktree layout derive from the *repository*, not the
-        // current working tree — otherwise invoking from a linked worktree named
-        // after its branch (e.g. bare.git/main) would use "main" as the name.
-        // Normal: git_dir is <root>/.git, so the name is <root>'s dir name.
-        // Bare: git_dir is the bare dir itself, with a trailing ".git" stripped.
-        let name_dir = if bare { Some(git_dir.as_path()) } else { git_dir.parent() };
-        let name = name_dir
-            .and_then(Path::file_name)
-            .map(|n| n.to_string_lossy().trim_end_matches(".git").to_string())
+        // Identity and layout derive from the *repository's main worktree*, not
+        // the invoking working tree — otherwise running from a linked worktree
+        // named after its branch (e.g. bare.git/main) would use "main" as the
+        // name. git lists the main worktree first; for a bare repo that entry is
+        // the bare dir. (Under --separate-git-dir git reports the git dir here
+        // rather than the checkout, so the name is best-effort in that setup;
+        // bare-ness is still correct via core.bare above.)
+        let list = git_capture(Some(&here), &["worktree", "list", "--porcelain"])?;
+        let main = parse_worktrees(&list)
+            .into_iter()
+            .next()
+            .map(|w| w.path)
+            .unwrap_or_else(|| git_dir.clone());
+        let name = main
+            .file_name()
+            .map(|n| {
+                let n = n.to_string_lossy();
+                // strip the bare dir's ".git" suffix (barerepo.git -> barerepo)
+                if bare { n.trim_end_matches(".git").to_string() } else { n.into_owned() }
+            })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "repo".into());
-        Ok(Repo { root, git_dir, name, bare })
+        Ok(Repo { root, git_dir, main, name, bare })
     }
 
     /// Directory to run git subcommands from.
@@ -187,20 +204,30 @@ fn branch_exists(repo: &Repo, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The repository's `core.bare` flag, read from the shared config so it doesn't
+/// depend on cwd (a linked worktree of a bare repo reads the same value).
+fn is_bare(git_dir: &Path) -> bool {
+    Command::new("git")
+        .arg("config")
+        .arg("--file")
+        .arg(git_dir.join("config"))
+        .args(["--get", "core.bare"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false)
+}
+
 /// Base dir that a `worktree_path` template resolves against: the parent of the
 /// main working tree for a normal repo, or the bare dir itself for a bare repo
-/// (so worktrees land as siblings inside `barerepo.git/`). Derived from git_dir
-/// so it's the same regardless of which worktree tonic is invoked from.
-fn worktree_base(bare: bool, git_dir: &Path) -> PathBuf {
+/// (so worktrees land as siblings inside `barerepo.git/`). `main` is the repo's
+/// main worktree, so this is the same regardless of which worktree tonic runs in.
+fn worktree_base(bare: bool, main: &Path) -> PathBuf {
     if bare {
-        git_dir.to_path_buf()
+        main.to_path_buf()
     } else {
-        // git_dir is <mainroot>/.git; the base is the parent of <mainroot>.
-        git_dir
-            .parent()
-            .and_then(Path::parent)
-            .unwrap_or(git_dir)
-            .to_path_buf()
+        main.parent().unwrap_or(main).to_path_buf()
     }
 }
 
@@ -224,7 +251,7 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
         if p.is_absolute() {
             p
         } else {
-            worktree_base(repo.bare, &repo.git_dir).join(p)
+            worktree_base(repo.bare, &repo.main).join(p)
         }
     };
     if path.exists() {
@@ -503,9 +530,9 @@ mod tests {
 
     #[test]
     fn worktree_base_normal_vs_bare() {
-        // normal: base is the parent of the main working tree (git_dir/../..)
+        // normal: base is the parent of the main working tree
         assert_eq!(
-            worktree_base(false, Path::new("/src/myrepo/.git")),
+            worktree_base(false, Path::new("/src/myrepo")),
             PathBuf::from("/src")
         );
         // bare: base is the bare dir itself (siblings land inside it)
