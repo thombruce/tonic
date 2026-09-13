@@ -10,7 +10,8 @@ use std::process::Command;
 #[derive(Deserialize, Default)]
 struct Config {
     /// Path template for new worktrees, resolved relative to the repo's parent
-    /// dir. Placeholders: {repo}, {branch}. Default: "{repo}.git/{branch}".
+    /// dir. Placeholders: {repo}, {branch}. Default: "{repo}-{branch}" (normal
+    /// repo) or "{branch}" (bare).
     worktree_path: Option<String>,
     /// Per-pattern mode overrides for entries listed in `.worktreeinclude`.
     include: Option<Vec<Include>>,
