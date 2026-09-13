@@ -193,9 +193,13 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
 
-    let default_template = if repo.bare { "{branch}" } else { "{repo}.git/{branch}" };
+    let default_template = if repo.bare { "{branch}" } else { "{repo}-{branch}" };
     let template = cfg.worktree_path.as_deref().unwrap_or(default_template);
-    let rendered = render(template, &[("repo", &repo.name), ("branch", branch)]);
+    // Branch names can contain '/'; flatten it for the path so the worktree is
+    // one directory, not nested subdirs. The real branch name (with '/') is
+    // still used for git and hooks below.
+    let path_branch = branch.replace('/', "-");
+    let rendered = render(template, &[("repo", &repo.name), ("branch", &path_branch)]);
     let path = {
         let p = PathBuf::from(&rendered);
         if p.is_absolute() {

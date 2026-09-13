@@ -43,7 +43,9 @@ system < global < local precedence):
 ```toml
 # Path template for new worktrees. Placeholders: {repo}, {branch}.
 # Resolved relative to the repo's parent dir (normal repo) or the bare dir
-# itself (bare repo). Default: "{repo}.git/{branch}" normal, "{branch}" bare.
+# itself (bare repo). Default: "{repo}-{branch}" normal (a sibling of the
+# working tree), "{branch}" bare. A "/" in a branch name is flattened to "-"
+# in the path. Example override — nest worktrees inside the repo instead:
 worktree_path = "{repo}/.worktrees/{branch}"
 
 # Per-pattern transfer mode for entries listed in .worktreeinclude.
