@@ -104,9 +104,11 @@ struct Repo {
 
 impl Repo {
     fn discover() -> Result<Repo> {
-        let bare = git_capture(None, &["rev-parse", "--is-bare-repository"])? == "true";
-        // --show-toplevel errors in a bare repo, so only ask when not bare.
-        let root = if bare {
+        // Whether the *current dir* has no working tree (a bare dir): needed
+        // only because --show-toplevel errors there. Not the same as the repo
+        // being bare — a linked worktree of a bare repo has a working tree.
+        let no_worktree = git_capture(None, &["rev-parse", "--is-bare-repository"])? == "true";
+        let root = if no_worktree {
             None
         } else {
             let toplevel = git_capture(None, &["rev-parse", "--show-toplevel"])?;
@@ -118,11 +120,20 @@ impl Repo {
         let git_dir = abs(&here, Path::new(&common));
         // --git-common-dir is often ".", leaving "/./" in derived paths; clean it.
         let git_dir = std::fs::canonicalize(&git_dir).unwrap_or(git_dir);
-        // Name from the working tree, else the bare dir with a trailing ".git"
-        // stripped (barerepo.git -> barerepo).
-        let dir = root.as_deref().unwrap_or(&git_dir);
-        let name = dir
-            .file_name()
+
+        // The repository is bare when its common git dir is not a `.git` inside
+        // a working tree. Derived from git_dir (the repo identity), so it's
+        // correct even when invoked from inside a linked worktree.
+        let bare = git_dir.file_name().and_then(|n| n.to_str()) != Some(".git");
+
+        // Repo name and worktree layout derive from the *repository*, not the
+        // current working tree — otherwise invoking from a linked worktree named
+        // after its branch (e.g. bare.git/main) would use "main" as the name.
+        // Normal: git_dir is <root>/.git, so the name is <root>'s dir name.
+        // Bare: git_dir is the bare dir itself, with a trailing ".git" stripped.
+        let name_dir = if bare { Some(git_dir.as_path()) } else { git_dir.parent() };
+        let name = name_dir
+            .and_then(Path::file_name)
             .map(|n| n.to_string_lossy().trim_end_matches(".git").to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "repo".into());
@@ -177,12 +188,19 @@ fn branch_exists(repo: &Repo, branch: &str) -> bool {
 }
 
 /// Base dir that a `worktree_path` template resolves against: the parent of the
-/// working tree for a normal repo, or the bare dir itself for a bare repo (so
-/// worktrees land as siblings inside `barerepo.git/`).
-fn worktree_base(root: Option<&Path>, git_dir: &Path) -> PathBuf {
-    match root {
-        Some(r) => r.parent().unwrap_or(r).to_path_buf(),
-        None => git_dir.to_path_buf(),
+/// main working tree for a normal repo, or the bare dir itself for a bare repo
+/// (so worktrees land as siblings inside `barerepo.git/`). Derived from git_dir
+/// so it's the same regardless of which worktree tonic is invoked from.
+fn worktree_base(bare: bool, git_dir: &Path) -> PathBuf {
+    if bare {
+        git_dir.to_path_buf()
+    } else {
+        // git_dir is <mainroot>/.git; the base is the parent of <mainroot>.
+        git_dir
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(git_dir)
+            .to_path_buf()
     }
 }
 
@@ -206,7 +224,7 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
         if p.is_absolute() {
             p
         } else {
-            worktree_base(repo.root.as_deref(), &repo.git_dir).join(p)
+            worktree_base(repo.bare, &repo.git_dir).join(p)
         }
     };
     if path.exists() {
@@ -485,14 +503,14 @@ mod tests {
 
     #[test]
     fn worktree_base_normal_vs_bare() {
-        // normal: base is the parent of the working tree
+        // normal: base is the parent of the main working tree (git_dir/../..)
         assert_eq!(
-            worktree_base(Some(Path::new("/src/myrepo")), Path::new("/src/myrepo/.git")),
+            worktree_base(false, Path::new("/src/myrepo/.git")),
             PathBuf::from("/src")
         );
         // bare: base is the bare dir itself (siblings land inside it)
         assert_eq!(
-            worktree_base(None, Path::new("/src/myrepo.git")),
+            worktree_base(true, Path::new("/src/myrepo.git")),
             PathBuf::from("/src/myrepo.git")
         );
     }
