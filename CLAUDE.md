@@ -15,6 +15,10 @@ cargo run -- add -b foo  # run the CLI (args after --)
 
 CI (`.github/workflows/ci.yml`) runs `cargo test` and `cargo clippy -- -D warnings` on every push/PR to `main` — clippy warnings fail the build, so run `cargo clippy -- -D warnings` before pushing.
 
+## Workflow
+
+Land changes via a short-lived branch and a PR to `main` — do not commit code changes straight to `main`. Let CI (test + clippy) go green on the PR, then squash-merge. Release version bumps and tagging (see Packaging & release) are the exception: they're the maintainer's release step and go directly on `main`.
+
 ## Architecture
 
 Two source files. `src/main.rs` is a thin `clap` shell: each subcommand is a `Cmd` variant that dispatches to one `pub fn` in `src/lib.rs`. All logic lives in `lib.rs`. Adding a command = add a variant + a dispatch line in `main.rs`, and a `pub fn` in `lib.rs`.
