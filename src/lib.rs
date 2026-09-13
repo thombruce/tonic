@@ -357,7 +357,7 @@ pub fn shell_init(shell: &str) -> Result<()> {
 
 fn shell_wrapper(shell: &str) -> Option<&'static str> {
     match shell {
-        "bash" | "zsh" => Some(POSIX_WRAPPER),
+        "bash" | "zsh" => Some(BASH_ZSH_WRAPPER),
         "fish" => Some(FISH_WRAPPER),
         _ => None,
     }
@@ -365,7 +365,8 @@ fn shell_wrapper(shell: &str) -> Option<&'static str> {
 
 // `add`/`cd` print the worktree path on stdout (status is on stderr), so the
 // wrapper captures stdout and cd's on success; everything else passes through.
-const POSIX_WRAPPER: &str = r#"tonic() {
+// Uses `local`, so this is bash/zsh only — not portable to a pure POSIX sh.
+const BASH_ZSH_WRAPPER: &str = r#"tonic() {
     case "$1" in
         add|cd)
             local __tonic_dir
