@@ -323,9 +323,24 @@ pub fn add(
     let force_new = new_branch || base.is_some();
     let local = branch_exists(&repo, branch);
 
-    // #16: a branch can only be checked out in one worktree. If it already is,
-    // fail early with a clear message instead of git's raw error.
-    if local && !force_new {
+    // `--remote` only has meaning on the remote-tracking path; if it can't apply,
+    // say so rather than silently ignoring the user's explicit choice.
+    if remote.is_some() {
+        if force_new {
+            bail!("--remote can't be combined with -b/--base, which create a new branch rather than track a remote");
+        }
+        if local {
+            bail!("branch '{branch}' already exists locally; --remote only applies when creating a new branch from a remote");
+        }
+    }
+
+    // A branch that already exists can't be re-created or checked out twice —
+    // catch both cases with a clear message instead of git's raw error.
+    if local {
+        if force_new {
+            bail!("branch '{branch}' already exists\n       omit -b/--base to check it out, or choose a new name");
+        }
+        // #16: a branch can only be checked out in one worktree.
         let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
         if let Some(p) = parse_worktree(&list, branch) {
             bail!(
