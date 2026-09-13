@@ -39,7 +39,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 
 ```
 tonic add <branch> [-b]        # create a worktree for <branch> (-b: new branch)
-tonic list                     # list worktrees
+tonic list                     # list worktrees (marks current with *, flags dirty ones)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic rm  <branch> [-f] [-d]   # remove a worktree (-f: force, -d: also delete branch)
 tonic shell-init <shell>       # print the shell function for cd integration
