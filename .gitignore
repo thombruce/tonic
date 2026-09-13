@@ -2,3 +2,6 @@
 
 # Local Claude Code settings + its temp files (per-user, not shared)
 .claude/settings.local.json*
+
+# macOS
+.DS_Store
