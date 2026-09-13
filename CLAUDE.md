@@ -25,11 +25,13 @@ Two source files. `src/main.rs` is a thin `clap` shell: each subcommand is a `Cm
 
 **Shells out to `git`; does not link libgit2/gix.** Everything goes through two helpers: `git_run` (runs, bails on nonzero exit) and `git_capture` (returns trimmed stdout). The one exception is `is_ignored`, which calls `git check-ignore --quiet` and inspects the raw exit status directly — exit 1 ("not ignored") is a normal result there, not an error, so it must not use `git_run`.
 
-**`Repo::discover` is the model for normal vs bare repos.** `root: Option<PathBuf>` is `None` for a bare repo (no working tree). Because of this split:
-- `Repo::cwd()` is the dir to run git subcommands from (working tree, or the bare dir).
-- `worktree_base()` is what a `worktree_path` template resolves against (parent of the working tree for normal; the bare dir itself for bare, so worktrees land as siblings inside `barerepo.git/`).
-- The default path template differs: `{repo}-{branch}` (sibling of the working tree) normal, `{branch}` bare. `/` in a branch name is flattened to `-` for the path only (git/hooks still get the real name).
-- Gotchas encoded here: `git rev-parse --show-toplevel` *errors* (not empty) in a bare repo, so it's only called when not bare; `--git-common-dir` returns `.`, so `git_dir` is canonicalized to avoid `/./` in derived paths.
+**`Repo::discover` is the model for normal vs bare repos.** Identity is derived from the *repository*, not the invoking working tree, so it's stable no matter which worktree tonic runs in:
+- `root: Option<PathBuf>` is the invoking working tree (`None` when invoked from a bare dir). Used only for `Repo::cwd()` (where git runs) and as the `.worktreeinclude` source — **not** for identity.
+- `bare` comes from `core.bare` in the shared config (`is_bare`), so it's correct even inside a linked worktree of a bare repo — unlike `--is-bare-repository`, which is false there.
+- `main` is the repository's main worktree (first entry of `git worktree list --porcelain`), from which `name` and the worktree base are derived.
+- `worktree_base(bare, main)` is what a `worktree_path` template resolves against: parent of the main worktree (normal), or the bare dir itself (bare, so worktrees land as siblings inside `barerepo.git/`).
+- Default path template: `{repo}-{branch}` (sibling of the working tree) normal, `{branch}` bare. `/` in a branch name is flattened to `-` for the path only (git/hooks still get the real name).
+- Gotchas: `git rev-parse --show-toplevel` *errors* (not empty) in a bare repo, so it's gated on `--is-bare-repository`; `--git-common-dir` returns `.`, so `git_dir` is canonicalized to avoid `/./`; under `--separate-git-dir` git reports the git dir (not the checkout) as the main worktree, so `name` is best-effort there (bare-ness is still correct via `core.bare`).
 
 **Config** (`Config::load`) is TOML merged over a chain, later wins per key (mirrors git's system < global < local): `~/.config/tonic/config.toml` → `<repo>/tonic.toml` → `<gitdir>/tonic.toml`. The middle (shared, committed) slot is skipped for bare repos. Merge is per-top-level-key replace, not deep.
 
