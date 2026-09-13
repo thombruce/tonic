@@ -207,6 +207,58 @@ fn branch_exists(repo: &Repo, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Append the git args for creating a new branch from HEAD (or from `base`).
+fn new_branch_args(args: &mut Vec<String>, branch: &str, path: &str, base: Option<&str>) {
+    args.extend(["-b".into(), branch.into(), path.to_string()]);
+    if let Some(b) = base {
+        args.push(b.to_string());
+    }
+}
+
+/// Remotes that have a remote-tracking ref for `branch` (requires a prior fetch;
+/// tonic matches existing `refs/remotes/*` refs, it does not fetch).
+fn remotes_with_branch(repo: &Repo, branch: &str) -> Vec<String> {
+    let remotes = git_capture(Some(repo.cwd()), &["remote"]).unwrap_or_default();
+    remotes
+        .lines()
+        .filter(|r| {
+            Command::new("git")
+                .args(["show-ref", "--verify", "--quiet"])
+                .arg(format!("refs/remotes/{r}/{branch}"))
+                .current_dir(repo.cwd())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Pick the remote to track `branch` from when it has no local branch. `explicit`
+/// forces a remote (error if it lacks the branch). Otherwise prefer `origin`,
+/// else the sole remote that has it; `None` if none do, error if ambiguous.
+fn choose_remote(repo: &Repo, branch: &str, explicit: Option<&str>) -> Result<Option<String>> {
+    let have = remotes_with_branch(repo, branch);
+    if let Some(r) = explicit {
+        return if have.iter().any(|x| x == r) {
+            Ok(Some(r.to_string()))
+        } else {
+            bail!("remote '{r}' has no branch '{branch}'")
+        };
+    }
+    if have.iter().any(|r| r == "origin") {
+        return Ok(Some("origin".into()));
+    }
+    match have.len() {
+        0 => Ok(None),
+        1 => Ok(have.into_iter().next()),
+        _ => bail!(
+            "branch '{branch}' exists on multiple remotes: {}. use --remote <name>",
+            have.join(", ")
+        ),
+    }
+}
+
 /// The repository's `core.bare` flag, read from the shared config so it doesn't
 /// depend on cwd (a linked worktree of a bare repo reads the same value).
 fn is_bare(git_dir: &Path) -> bool {
@@ -238,7 +290,12 @@ fn worktree_base(bare: bool, main: &Path) -> PathBuf {
 // add
 // ---------------------------------------------------------------------------
 
-pub fn add(branch: &str, new_branch: bool) -> Result<()> {
+pub fn add(
+    branch: &str,
+    new_branch: bool,
+    base: Option<&str>,
+    remote: Option<&str>,
+) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
 
@@ -261,20 +318,65 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
         bail!("worktree path already exists: {}", path.display());
     }
 
-    let path_str = path.to_string_lossy().into_owned();
-    // `git worktree add <path> <branch>` requires <branch> to be an existing
-    // ref. If it doesn't exist locally, create it (as `-b` would) so plain
-    // `tonic add foo` works whether foo is new or existing. ponytail: a missing
-    // local branch is created from HEAD; it won't auto-track a remote branch of
-    // the same name — add remote DWIM (`--guess-remote`) if that's wanted.
-    let create = new_branch || !branch_exists(&repo, branch);
-    let mut args = vec!["worktree", "add"];
-    if create {
-        args.extend(["-b", branch, &path_str]);
-    } else {
-        args.extend([&path_str, branch]);
+    // `-b` and `--base` both mean "make a new branch" (from HEAD, or from base),
+    // skipping the remote-tracking DWIM below.
+    let force_new = new_branch || base.is_some();
+    let local = branch_exists(&repo, branch);
+
+    // `--remote` only has meaning on the remote-tracking path; if it can't apply,
+    // say so rather than silently ignoring the user's explicit choice.
+    if remote.is_some() {
+        if force_new {
+            bail!("--remote can't be combined with -b/--base, which create a new branch rather than track a remote");
+        }
+        if local {
+            bail!("branch '{branch}' already exists locally; --remote only applies when creating a new branch from a remote");
+        }
     }
-    git_run(repo.cwd(), &args)?;
+
+    // A branch that already exists can't be re-created or checked out twice —
+    // catch both cases with a clear message instead of git's raw error.
+    if local {
+        if force_new {
+            bail!("branch '{branch}' already exists\n       omit -b/--base to check it out, or choose a new name");
+        }
+        // #16: a branch can only be checked out in one worktree.
+        let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+        if let Some(p) = parse_worktree(&list, branch) {
+            bail!(
+                "branch '{branch}' is already checked out at {}\n       try: tonic cd {branch}",
+                p.display()
+            );
+        }
+    }
+
+    let path_str = path.to_string_lossy().into_owned();
+    let mut args: Vec<String> = vec!["worktree".into(), "add".into()];
+    let mut tracking: Option<String> = None;
+
+    if !force_new && local {
+        // Existing local branch, not checked out anywhere: check it out.
+        args.push(path_str.clone());
+        args.push(branch.into());
+    } else if !force_new {
+        // No local branch: check remotes. #15 — if exactly one remote (origin
+        // preferred) has it, create a local branch tracking it. Otherwise fall
+        // through to a new branch from HEAD.
+        match choose_remote(&repo, branch, remote)? {
+            Some(r) => {
+                args.extend(["--track".into(), "-b".into(), branch.into(), path_str.clone()]);
+                args.push(format!("{r}/{branch}"));
+                tracking = Some(format!("{r}/{branch}"));
+            }
+            None => new_branch_args(&mut args, branch, &path_str, base),
+        }
+    } else {
+        // -b / --base: force a new branch.
+        new_branch_args(&mut args, branch, &path_str, base);
+    }
+
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    git_run(repo.cwd(), &arg_refs)?;
 
     transfer_includes(&repo, &path, &cfg)?;
     run_hooks(&cfg, "post_create", &repo, branch, &path)?;
@@ -285,6 +387,9 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
         "{} created worktree for {branch}",
         "✓".if_supports_color(Stream::Stderr, |t| t.green())
     );
+    if let Some(t) = tracking {
+        eprintln!("  tracking {t}");
+    }
     println!("{}", path.display());
     Ok(())
 }
@@ -715,6 +820,17 @@ mod tests {
                    worktree /repo/.worktrees/feat\nHEAD def\nbranch refs/heads/feat\n";
         assert_eq!(parse_worktree(out, "feat"), Some(PathBuf::from("/repo/.worktrees/feat")));
         assert_eq!(parse_worktree(out, "nope"), None);
+    }
+
+    #[test]
+    fn new_branch_args_from_head_and_base() {
+        let mut a = vec!["worktree".to_string(), "add".to_string()];
+        new_branch_args(&mut a, "foo", "/p", None);
+        assert_eq!(a, ["worktree", "add", "-b", "foo", "/p"]);
+
+        let mut b: Vec<String> = Vec::new();
+        new_branch_args(&mut b, "foo", "/p", Some("main"));
+        assert_eq!(b, ["-b", "foo", "/p", "main"]);
     }
 
     #[test]

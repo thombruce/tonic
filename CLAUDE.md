@@ -35,6 +35,8 @@ Two source files. `src/main.rs` is a thin `clap` shell: each subcommand is a `Cm
 
 **`.worktreeinclude` transfer** (`transfer_includes`): source dir comes from `resolve_source` — the working tree normally, or for a bare-dir invocation the `main/` then `master/` worktree. Each line is a glob (top-level/relative, via the `glob` crate — *not* full gitignore semantics). A file is transferred only if it is **both** matched and gitignored (`is_ignored`); tracked files are never copied. Per-pattern `mode` (copy/symlink, default copy) comes from config `[[include]]`, keyed by matching the `.worktreeinclude` pattern string.
 
+**`add` branch resolution** (see `add`): local branch → check out (error if already checked out elsewhere — one branch, one worktree); else a remote with the branch → local tracking branch (`choose_remote`: `origin` preferred, `--remote` to disambiguate, matches existing `refs/remotes/*` only — no fetch); else new branch from HEAD. `-b`/`--base` force a new branch and skip the remote step.
+
 **Hooks** run via `sh -c` in the new worktree dir. Events: `post_create` (after add), `pre_remove` (before rm). Command strings are templated with `{repo}`, `{branch}`, `{worktree_path}` (see `render`).
 
 **Output contract.** Human status goes to **stderr**; **stdout** carries machine-readable output only — the resolved worktree path for `add`/`cd`, the listing for `list`. `git_run` and hooks route their child stdout to stderr (`redirect_stdout_to_stderr`, unix-only) because e.g. `git worktree add` prints "HEAD is now at …" to stdout. This is what lets the `shell-init` wrapper do `cd "$(tonic add …)"` — so don't `println!` status text, use `eprintln!`.

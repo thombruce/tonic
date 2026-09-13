@@ -38,7 +38,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 ## Commands
 
 ```
-tonic add <branch> [-b]        # create a worktree for <branch> (-b: new branch)
+tonic add <branch> [-b] [--base <ref>] [--remote <name>]   # create a worktree
 tonic list                     # list worktrees (marks current with *, flags dirty ones)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic rm  <branch> [-f] [-d]   # remove a worktree (-f: force, -d: also delete branch)
@@ -49,6 +49,18 @@ tonic shell-init <shell>       # print the shell function for cd integration
 `.worktreeinclude` entries (copy or symlink per pattern), then runs `post_create`
 hooks. `rm` runs `pre_remove` hooks, removes the worktree, and optionally deletes
 the branch.
+
+### How `tonic add <branch>` resolves the branch
+
+1. **Local branch exists** → check it out. (If it's already checked out in
+   another worktree, tonic errors and points you at `tonic cd`.)
+2. **No local branch, but a remote has it** → create a local branch tracking the
+   remote (`origin` preferred; `--remote <name>` to pick among several).
+   Requires the remote-tracking ref to exist locally — `git fetch` first if not.
+3. **Nowhere** → create a new branch from `HEAD`.
+
+Flags override the default: `-b` forces a new branch (from `HEAD`, skipping the
+remote-tracking step), `--base <ref>` starts a new branch from `<ref>`.
 
 ## Configuration
 
