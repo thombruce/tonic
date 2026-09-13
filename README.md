@@ -40,6 +40,11 @@ system < global < local precedence):
 2. `<repo>/tonic.toml` — shared, committed
 3. `<gitdir>/tonic.toml` — per-repo, private (untracked, lives inside `.git/`)
 
+Merging is **per top-level key, replace not append**: if a higher-priority file
+sets `[[include]]` or `[[hooks]]`, it replaces that whole list — it does not add
+to the lists from lower-priority files. To extend global hooks or includes in a
+more specific file, restate the full list there.
+
 ```toml
 # Path template for new worktrees. Placeholders: {repo}, {branch}.
 # Resolved relative to the repo's parent dir (normal repo) or the bare dir
