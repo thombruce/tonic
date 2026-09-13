@@ -39,9 +39,9 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 
 ```
 tonic add <branch> [-b] [--base <ref>] [--remote <name>]   # create a worktree
-tonic list                     # list worktrees (marks current with *, flags dirty ones)
+tonic list                     # list worktrees (alias: ls; marks current with *, flags dirty ones)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
-tonic rm  <branch> [-f] [-d]   # remove a worktree (-f: force, -d: also delete branch)
+tonic rm  <branch> [-f] [-d]   # remove a worktree (alias: remove; -f: force, -d: also delete branch)
 tonic shell-init <shell>       # print the shell function for cd integration
 ```
 

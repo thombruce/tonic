@@ -24,6 +24,7 @@ enum Cmd {
         remote: Option<String>,
     },
     /// List all worktrees
+    #[command(visible_alias = "ls")]
     List,
     /// Print the path of the worktree for BRANCH (used by shell integration)
     Cd {
@@ -37,6 +38,7 @@ enum Cmd {
         shell: String,
     },
     /// Remove the worktree checked out for BRANCH
+    #[command(visible_alias = "remove")]
     Rm {
         /// Branch whose worktree should be removed
         branch: String,
