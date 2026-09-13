@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use owo_colors::{OwoColorize, Stream};
 #[cfg(unix)]
 use std::os::fd::AsFd;
 use std::process::Command;
@@ -280,7 +281,10 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
 
     // Human status → stderr; the worktree path → stdout only, so the shell
     // integration (`tonic shell-init`) can `cd "$(tonic add ...)"`.
-    eprintln!("created worktree for {branch}");
+    eprintln!(
+        "{} created worktree for {branch}",
+        "✓".if_supports_color(Stream::Stderr, |t| t.green())
+    );
     println!("{}", path.display());
     Ok(())
 }
@@ -313,7 +317,11 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         git_run(repo.cwd(), &["branch", flag, branch])?;
     }
 
-    eprintln!("removed worktree: {}", path.display());
+    eprintln!(
+        "{} removed worktree: {}",
+        "✓".if_supports_color(Stream::Stderr, |t| t.green()),
+        path.display()
+    );
     Ok(())
 }
 
@@ -324,10 +332,63 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
 pub fn list() -> Result<()> {
     let repo = Repo::discover()?;
     let out = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
-    for w in parse_worktrees(&out) {
-        println!("{}  [{}]", w.path.display(), w.label);
+    let worktrees = parse_worktrees(&out);
+
+    // The current worktree is the one whose path is the invoking working tree.
+    let current = repo.root.as_deref().and_then(|r| std::fs::canonicalize(r).ok());
+    let width = worktrees.iter().map(|w| w.label.chars().count()).max().unwrap_or(0);
+
+    for w in &worktrees {
+        let is_bare = w.label == "bare";
+        // The bare entry is the anchor, not an actionable worktree: dim it, and
+        // it's never "current" (that belongs to an actual checkout).
+        let is_current =
+            !is_bare && current.is_some() && std::fs::canonicalize(&w.path).ok() == current;
+        let dirty = !is_bare && is_dirty(&w.path);
+
+        let label = format!("{:<width$}", w.label);
+        let path = w.path.display().to_string();
+
+        if is_bare {
+            println!(
+                "  {}  {}",
+                label.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+                path.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            );
+            continue;
+        }
+
+        let marker = if is_current {
+            format!("{}", "*".if_supports_color(Stream::Stdout, |t| t.green()))
+        } else {
+            " ".to_string()
+        };
+        let label = if is_current {
+            let style = owo_colors::Style::new().green().bold();
+            format!("{}", label.if_supports_color(Stream::Stdout, |t| t.style(style)))
+        } else {
+            label
+        };
+        let path = format!("{}", path.if_supports_color(Stream::Stdout, |t| t.dimmed()));
+        let dirty = if dirty {
+            format!(" {}", "(dirty)".if_supports_color(Stream::Stdout, |t| t.yellow()))
+        } else {
+            String::new()
+        };
+        println!("{marker} {label}  {path}{dirty}");
     }
     Ok(())
+}
+
+/// True if the worktree at `path` has uncommitted changes.
+fn is_dirty(path: &Path) -> bool {
+    Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(path)
+        .output()
+        .ok()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
