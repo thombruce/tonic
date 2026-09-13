@@ -164,6 +164,17 @@ fn is_ignored(dir: &Path, rel: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// True if `branch` exists as a local branch.
+fn branch_exists(repo: &Repo, branch: &str) -> bool {
+    Command::new("git")
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .current_dir(repo.cwd())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Base dir that a `worktree_path` template resolves against: the parent of the
 /// working tree for a normal repo, or the bare dir itself for a bare repo (so
 /// worktrees land as siblings inside `barerepo.git/`).
@@ -198,8 +209,14 @@ pub fn add(branch: &str, new_branch: bool) -> Result<()> {
     }
 
     let path_str = path.to_string_lossy().into_owned();
+    // `git worktree add <path> <branch>` requires <branch> to be an existing
+    // ref. If it doesn't exist locally, create it (as `-b` would) so plain
+    // `tonic add foo` works whether foo is new or existing. ponytail: a missing
+    // local branch is created from HEAD; it won't auto-track a remote branch of
+    // the same name — add remote DWIM (`--guess-remote`) if that's wanted.
+    let create = new_branch || !branch_exists(&repo, branch);
     let mut args = vec!["worktree", "add"];
-    if new_branch {
+    if create {
         args.extend(["-b", branch, &path_str]);
     } else {
         args.extend([&path_str, branch]);
