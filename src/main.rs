@@ -13,9 +13,15 @@ enum Cmd {
     Add {
         /// Branch to check out in the new worktree
         branch: String,
-        /// Create BRANCH as a new branch
+        /// Create BRANCH as a new branch (from HEAD unless --base)
         #[arg(short = 'b', long = "new-branch")]
         new_branch: bool,
+        /// Create a new branch from this ref instead of HEAD (implies --new-branch)
+        #[arg(long)]
+        base: Option<String>,
+        /// When BRANCH exists on multiple remotes, track this one
+        #[arg(long)]
+        remote: Option<String>,
     },
     /// List all worktrees
     List,
@@ -45,7 +51,9 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
-        Cmd::Add { branch, new_branch } => tonic::add(&branch, new_branch),
+        Cmd::Add { branch, new_branch, base, remote } => {
+            tonic::add(&branch, new_branch, base.as_deref(), remote.as_deref())
+        }
         Cmd::List => tonic::list(),
         Cmd::Cd { branch } => tonic::cd(&branch),
         Cmd::ShellInit { shell } => tonic::shell_init(&shell),
