@@ -115,7 +115,10 @@ impl Repo {
         // Whether the *current dir* has no working tree (a bare dir): needed
         // only because --show-toplevel errors there. Not the same as the repo
         // being bare — a linked worktree of a bare repo has a working tree.
-        let no_worktree = git_capture(None, &["rev-parse", "--is-bare-repository"])? == "true";
+        // First git call — a failure here almost always means we're not in a repo.
+        let no_worktree = git_capture(None, &["rev-parse", "--is-bare-repository"])
+            .context("not a git repository")?
+            == "true";
         let root = if no_worktree {
             None
         } else {
