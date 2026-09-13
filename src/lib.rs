@@ -1,9 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
-use serde::Deserialize;
-use std::path::{Path, PathBuf};
 use owo_colors::{OwoColorize, Stream};
+use serde::Deserialize;
 #[cfg(unix)]
 use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
@@ -339,7 +339,7 @@ pub fn list() -> Result<()> {
     let width = worktrees.iter().map(|w| w.label.chars().count()).max().unwrap_or(0);
 
     for w in &worktrees {
-        let is_bare = w.label == "bare";
+        let is_bare = w.bare;
         // The bare entry is the anchor, not an actionable worktree: dim it, and
         // it's never "current" (that belongs to an actual checkout).
         let is_current =
@@ -380,8 +380,12 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
-/// True if the worktree at `path` has uncommitted changes.
+/// True if the worktree at `path` has uncommitted changes (tracked edits or
+/// untracked-but-not-ignored files; gitignored files don't count).
 fn is_dirty(path: &Path) -> bool {
+    // Like is_ignored, this bypasses git_run/git_capture on purpose: we only
+    // want the porcelain output and must tolerate a nonzero exit, which
+    // git_capture would turn into an error.
     Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(path)
@@ -454,39 +458,52 @@ end
 
 struct Worktree {
     path: PathBuf,
-    /// Branch name, or "detached" / "bare".
+    /// Branch name, or "detached". Display label; use `bare` to test the anchor.
     label: String,
+    /// True only for the bare-repo anchor entry (the standalone `bare` line),
+    /// not for a branch that happens to be named "bare".
+    bare: bool,
 }
 
 /// Parse `git worktree list --porcelain`. Each block is a `worktree <path>`
-/// line plus `branch refs/heads/<name>` (or a bare `detached`/`bare` line).
+/// line plus `branch refs/heads/<name>`, or a standalone `bare` / `detached`.
 fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
     let mut out = Vec::new();
     let mut path: Option<PathBuf> = None;
     let mut label = String::from("detached");
+    let mut bare = false;
     for line in porcelain.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
             if let Some(prev) = path.take() {
-                out.push(Worktree { path: prev, label: std::mem::replace(&mut label, "detached".into()) });
+                out.push(Worktree {
+                    path: prev,
+                    label: std::mem::replace(&mut label, "detached".into()),
+                    bare: std::mem::take(&mut bare),
+                });
             }
             path = Some(PathBuf::from(p));
         } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
             label = b.to_string();
-        } else if line == "bare" || line == "detached" {
-            label = line.to_string();
+        } else if line == "bare" {
+            // Standalone `bare` line = the anchor entry; distinct from a branch
+            // literally named "bare" (which arrives as `branch refs/heads/bare`).
+            bare = true;
+            label = "bare".to_string();
+        } else if line == "detached" {
+            label = "detached".to_string();
         }
     }
     if let Some(p) = path {
-        out.push(Worktree { path: p, label });
+        out.push(Worktree { path: p, label, bare });
     }
     out
 }
 
-/// Path of the worktree checked out for `branch`, if any.
+/// Path of the worktree checked out for `branch`, if any (never the bare anchor).
 fn parse_worktree(porcelain: &str, branch: &str) -> Option<PathBuf> {
     parse_worktrees(porcelain)
         .into_iter()
-        .find(|w| w.label == branch)
+        .find(|w| !w.bare && w.label == branch)
         .map(|w| w.path)
 }
 
@@ -698,6 +715,18 @@ mod tests {
                    worktree /repo/.worktrees/feat\nHEAD def\nbranch refs/heads/feat\n";
         assert_eq!(parse_worktree(out, "feat"), Some(PathBuf::from("/repo/.worktrees/feat")));
         assert_eq!(parse_worktree(out, "nope"), None);
+    }
+
+    #[test]
+    fn bare_anchor_distinct_from_branch_named_bare() {
+        let out = "worktree /repo.git\nbare\n\n\
+                   worktree /repo.git/bare\nHEAD abc\nbranch refs/heads/bare\n";
+        let wts = parse_worktrees(out);
+        // anchor: bare flag set, not a resolvable branch
+        assert!(wts[0].bare);
+        // the branch literally named "bare": not the anchor, and cd finds it
+        assert!(!wts[1].bare);
+        assert_eq!(parse_worktree(out, "bare"), Some(PathBuf::from("/repo.git/bare")));
     }
 
     #[test]
