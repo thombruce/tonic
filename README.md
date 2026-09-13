@@ -18,12 +18,31 @@ cargo install git-tonic            # from crates.io
 The crate is published as `git-tonic` (the name `tonic` was taken on crates.io),
 but the installed binary is `tonic`.
 
+### Shell integration (optional)
+
+`tonic` can drop you straight into a worktree after `add`, and `tonic cd <branch>`
+jumps to an existing one. A binary can't change its parent shell's directory, so
+this is a small shell function you source once. Add to your shell's rc:
+
+```sh
+# ~/.bashrc or ~/.zshrc
+eval "$(tonic shell-init zsh)"      # or: bash
+
+# ~/.config/fish/config.fish
+tonic shell-init fish | source
+```
+
+Without it `tonic` still works — `tonic add` just prints the new worktree path
+(so `cd "$(tonic add foo)"` works too).
+
 ## Commands
 
 ```
 tonic add <branch> [-b]        # create a worktree for <branch> (-b: new branch)
 tonic list                     # list worktrees
+tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic rm  <branch> [-f] [-d]   # remove a worktree (-f: force, -d: also delete branch)
+tonic shell-init <shell>       # print the shell function for cd integration
 ```
 
 `add` resolves the worktree path from config, runs `git worktree add`, transfers

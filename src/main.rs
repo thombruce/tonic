@@ -19,6 +19,17 @@ enum Cmd {
     },
     /// List all worktrees
     List,
+    /// Print the path of the worktree for BRANCH (used by shell integration)
+    Cd {
+        /// Branch whose worktree path to print
+        branch: String,
+    },
+    /// Print a shell function for `cd` integration; eval it in your shell rc
+    ShellInit {
+        /// Shell to emit the wrapper for
+        #[arg(value_parser = ["bash", "zsh", "fish"])]
+        shell: String,
+    },
     /// Remove the worktree checked out for BRANCH
     Rm {
         /// Branch whose worktree should be removed
@@ -36,6 +47,8 @@ fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
         Cmd::Add { branch, new_branch } => tonic::add(&branch, new_branch),
         Cmd::List => tonic::list(),
+        Cmd::Cd { branch } => tonic::cd(&branch),
+        Cmd::ShellInit { shell } => tonic::shell_init(&shell),
         Cmd::Rm { branch, force, delete_branch } => tonic::rm(&branch, force, delete_branch),
     }
 }
