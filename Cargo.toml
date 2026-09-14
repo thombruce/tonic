@@ -27,3 +27,19 @@ toml = "0.8"
 glob = "0.3"
 dirs = "5"
 owo-colors = { version = "4", features = ["supports-colors"] }
+
+[lints.clippy]
+# Deny panics and their siblings — a user-facing CLI should return errors, not
+# panic. Production code already complies; tests opt out (see mod tests).
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "deny"
