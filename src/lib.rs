@@ -830,6 +830,8 @@ fn git_capture(dir: Option<&Path>, args: &[&str]) -> Result<String> {
 }
 
 #[cfg(test)]
+// Tests may unwrap and index freely — the deny-panic lints target production.
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 

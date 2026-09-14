@@ -15,6 +15,8 @@ cargo run -- add -b foo  # run the CLI (args after --)
 
 CI (`.github/workflows/ci.yml`) runs `cargo test` and `cargo clippy -- -D warnings` on every push/PR to `main` — clippy warnings fail the build, so run `cargo clippy -- -D warnings` before pushing.
 
+`[lints.clippy]` in `Cargo.toml` **denies panics in production**: `unwrap_used`, `expect_used`, `indexing_slicing`, `arithmetic_side_effects`, `panic`, `todo`, `as_conversions`, etc. Return `Result`/handle the case instead. The `tests` module opts out via `#[allow(...)]` — unwrap/index freely there.
+
 ## Workflow
 
 Land changes via a short-lived branch and a PR to `main` — do not commit code changes straight to `main`. Let CI (test + clippy) go green on the PR, then squash-merge. Release version bumps and tagging (see Packaging & release) are the exception: they're the maintainer's release step and go directly on `main`.
