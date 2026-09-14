@@ -289,6 +289,55 @@ fn worktree_base(bare: bool, main: &Path) -> PathBuf {
     }
 }
 
+/// The path where `add` places (and `rm`/`cd` look for) the worktree for
+/// `branch`: the `worktree_path` template rendered and resolved against
+/// `worktree_base`. `/` in the branch name is flattened to `-` so the worktree
+/// is one directory, not nested subdirs (git/hooks still get the real name).
+fn worktree_path_for(repo: &Repo, cfg: &Config, branch: &str) -> PathBuf {
+    let default_template = if repo.bare { "{branch}" } else { "{repo}-{branch}" };
+    let template = cfg.worktree_path.as_deref().unwrap_or(default_template);
+    let path_branch = branch.replace('/', "-");
+    let rendered = render(template, &[("repo", &repo.name), ("branch", &path_branch)]);
+    let p = PathBuf::from(&rendered);
+    if p.is_absolute() {
+        p
+    } else {
+        worktree_base(repo.bare, &repo.main).join(p)
+    }
+}
+
+/// Resolve `name` to an existing worktree path for `rm`/`cd`. A worktree is a
+/// directory, so we don't rely on its current branch alone (it may be detached
+/// or switched, e.g. after `gh stack checkout`). Match, in order: the branch
+/// currently checked out; the path `add` would use for `name`; the worktree's
+/// directory basename.
+fn resolve_worktree(repo: &Repo, cfg: &Config, name: &str) -> Result<PathBuf> {
+    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+    let worktrees = parse_worktrees(&list);
+
+    // 1. currently checked out on branch `name`.
+    if let Some(w) = worktrees.iter().find(|w| !w.bare && w.label == name) {
+        return Ok(w.path.clone());
+    }
+    // 2. the path add would create for `name` (handles detached/switched HEAD).
+    let expected = worktree_path_for(repo, cfg, name);
+    let expected_canon = std::fs::canonicalize(&expected).unwrap_or(expected);
+    if let Some(w) = worktrees
+        .iter()
+        .find(|w| !w.bare && std::fs::canonicalize(&w.path).unwrap_or(w.path.clone()) == expected_canon)
+    {
+        return Ok(w.path.clone());
+    }
+    // 3. the worktree's directory basename (handles template drift / rm by dir).
+    if let Some(w) = worktrees
+        .iter()
+        .find(|w| !w.bare && w.path.file_name().and_then(|n| n.to_str()) == Some(name))
+    {
+        return Ok(w.path.clone());
+    }
+    bail!("no worktree found for '{name}'")
+}
+
 // ---------------------------------------------------------------------------
 // add
 // ---------------------------------------------------------------------------
@@ -302,21 +351,7 @@ pub fn add(
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
 
-    let default_template = if repo.bare { "{branch}" } else { "{repo}-{branch}" };
-    let template = cfg.worktree_path.as_deref().unwrap_or(default_template);
-    // Branch names can contain '/'; flatten it for the path so the worktree is
-    // one directory, not nested subdirs. The real branch name (with '/') is
-    // still used for git and hooks below.
-    let path_branch = branch.replace('/', "-");
-    let rendered = render(template, &[("repo", &repo.name), ("branch", &path_branch)]);
-    let path = {
-        let p = PathBuf::from(&rendered);
-        if p.is_absolute() {
-            p
-        } else {
-            worktree_base(repo.bare, &repo.main).join(p)
-        }
-    };
+    let path = worktree_path_for(&repo, &cfg, branch);
     if path.exists() {
         bail!("worktree path already exists: {}", path.display());
     }
@@ -405,9 +440,7 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
 
-    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
-    let path = parse_worktree(&list, branch)
-        .ok_or_else(|| anyhow!("no worktree checked out for branch '{branch}'"))?;
+    let path = resolve_worktree(&repo, &cfg, branch)?;
 
     // Are we standing in the worktree we're about to remove? (compare the
     // invoking working tree to the target). Computed before removal, since the
@@ -529,9 +562,8 @@ fn is_dirty(path: &Path) -> bool {
 /// as `cd "$(tonic cd <branch>)"` (see `shell_init`).
 pub fn cd(branch: &str) -> Result<()> {
     let repo = Repo::discover()?;
-    let out = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
-    let path = parse_worktree(&out, branch)
-        .ok_or_else(|| anyhow!("no worktree checked out for branch '{branch}'"))?;
+    let cfg = Config::load(&repo)?;
+    let path = resolve_worktree(&repo, &cfg, branch)?;
     println!("{}", path.display());
     Ok(())
 }
@@ -851,6 +883,23 @@ mod tests {
                    worktree /repo/.worktrees/feat\nHEAD def\nbranch refs/heads/feat\n";
         assert_eq!(parse_worktree(out, "feat"), Some(PathBuf::from("/repo/.worktrees/feat")));
         assert_eq!(parse_worktree(out, "nope"), None);
+    }
+
+    #[test]
+    fn worktree_path_default_flattens_slash() {
+        let repo = Repo {
+            root: None,
+            git_dir: PathBuf::from("/x/r/.git"),
+            main: PathBuf::from("/x/r"),
+            name: "r".into(),
+            bare: false,
+        };
+        // default template "{repo}-{branch}", resolved against the main worktree's
+        // parent; "feat/x" flattens to one dir.
+        assert_eq!(
+            worktree_path_for(&repo, &Config::default(), "feat/x"),
+            PathBuf::from("/x/r-feat-x")
+        );
     }
 
     #[test]

@@ -39,6 +39,8 @@ Two source files. `src/main.rs` is a thin `clap` shell: each subcommand is a `Cm
 
 **`add` branch resolution** (see `add`): local branch → check out (error if already checked out elsewhere — one branch, one worktree); else a remote with the branch → local tracking branch (`choose_remote`: `origin` preferred, `--remote` to disambiguate, matches existing `refs/remotes/*` only — no fetch); else new branch from HEAD. `-b`/`--base` force a new branch and skip the remote step.
 
+**`rm`/`cd` worktree resolution** (`resolve_worktree`): a worktree is a directory, not its current branch, so resolution matches in order — the branch currently checked out, then the path `add` would use for the name (`worktree_path_for`, the same computation `add` runs), then the worktree's dir basename. This keeps `rm`/`cd` working when a worktree's HEAD is detached or switched (e.g. after `gh stack checkout`).
+
 **Hooks** run via `sh -c` in the new worktree dir. Events: `post_create` (after add), `pre_remove` (before rm). Command strings are templated with `{repo}`, `{branch}`, `{worktree_path}` (see `render`).
 
 **Output contract.** Human status goes to **stderr**; **stdout** carries machine-readable output only — the resolved worktree path for `add`/`cd`, the listing for `list`, and (only when removing the *current* worktree) a fallback path for `rm` so the wrapper can `cd` out of the doomed dir. `git_run` and hooks route their child stdout to stderr (`redirect_stdout_to_stderr`, unix-only) because e.g. `git worktree add` prints "HEAD is now at …" to stdout. This is what lets the `shell-init` wrapper do `cd "$(tonic add …)"` — so don't `println!` status text, use `eprintln!`.
