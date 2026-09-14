@@ -320,12 +320,11 @@ fn resolve_worktree(repo: &Repo, cfg: &Config, name: &str) -> Result<PathBuf> {
         return Ok(w.path.clone());
     }
     // 2. the path add would create for `name` (handles detached/switched HEAD).
-    let expected = worktree_path_for(repo, cfg, name);
-    let expected_canon = std::fs::canonicalize(&expected).unwrap_or(expected);
-    if let Some(w) = worktrees
-        .iter()
-        .find(|w| !w.bare && std::fs::canonicalize(&w.path).unwrap_or(w.path.clone()) == expected_canon)
-    {
+    // Canonicalize both sides the same way (falling back to raw) so a symlinked
+    // base like macOS /tmp -> /private/tmp doesn't cause a spurious miss.
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let expected = canon(&worktree_path_for(repo, cfg, name));
+    if let Some(w) = worktrees.iter().find(|w| !w.bare && canon(&w.path) == expected) {
         return Ok(w.path.clone());
     }
     // 3. the worktree's directory basename (handles template drift / rm by dir).
