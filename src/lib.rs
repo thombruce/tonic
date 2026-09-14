@@ -561,6 +561,10 @@ fn shell_wrapper(shell: &str) -> Option<&'static str> {
 const BASH_ZSH_WRAPPER: &str = r#"tonic() {
     case "$1" in
         add|cd|rm|remove)
+            # --help prints to stdout at exit 0; don't capture it as a path.
+            case " $* " in
+                *" -h "*|*" --help "*) command tonic "$@"; return ;;
+            esac
             local __tonic_dir
             __tonic_dir="$(command tonic "$@")" || return
             [ -n "$__tonic_dir" ] && cd "$__tonic_dir"
@@ -575,6 +579,11 @@ const BASH_ZSH_WRAPPER: &str = r#"tonic() {
 const FISH_WRAPPER: &str = r#"function tonic
     switch $argv[1]
         case add cd rm remove
+            # --help prints to stdout at exit 0; don't capture it as a path.
+            if contains -- -h $argv; or contains -- --help $argv
+                command tonic $argv
+                return
+            end
             set -l __tonic_dir (command tonic $argv); or return
             test -n "$__tonic_dir"; and cd $__tonic_dir
         case '*'
