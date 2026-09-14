@@ -409,20 +409,32 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
     let path = parse_worktree(&list, branch)
         .ok_or_else(|| anyhow!("no worktree checked out for branch '{branch}'"))?;
 
+    // Are we standing in the worktree we're about to remove? (compare the
+    // invoking working tree to the target). Computed before removal, since the
+    // dir won't be canonicalizable afterwards.
+    let removing_current = repo
+        .root
+        .as_deref()
+        .and_then(|r| std::fs::canonicalize(r).ok())
+        .zip(std::fs::canonicalize(&path).ok())
+        .is_some_and(|(here, target)| here == target);
+
     run_hooks(&cfg, "pre_remove", &repo, branch, &path)?;
 
+    // Run git from the main worktree, not the target: if we're removing the
+    // current worktree, its dir is about to disappear from under us.
     let path_str = path.to_string_lossy().into_owned();
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");
     }
     args.push(&path_str);
-    git_run(repo.cwd(), &args)?;
+    git_run(&repo.main, &args)?;
 
     if delete_branch {
         // -d refuses unmerged branches; -f opts into -D's force delete.
         let flag = if force { "-D" } else { "-d" };
-        git_run(repo.cwd(), &["branch", flag, branch])?;
+        git_run(&repo.main, &["branch", flag, branch])?;
     }
 
     eprintln!(
@@ -430,6 +442,12 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         "✓".if_supports_color(Stream::Stderr, |t| t.green()),
         path.display()
     );
+    // If we just deleted the worktree we were in, print a safe fallback path on
+    // stdout so the shell integration can `cd` there instead of leaving the
+    // shell stranded in a deleted directory (#29).
+    if removing_current {
+        println!("{}", repo.main.display());
+    }
     Ok(())
 }
 
@@ -536,12 +554,13 @@ fn shell_wrapper(shell: &str) -> Option<&'static str> {
     }
 }
 
-// `add`/`cd` print the worktree path on stdout (status is on stderr), so the
-// wrapper captures stdout and cd's on success; everything else passes through.
+// add/cd (and rm when it removes the current worktree) print a path on stdout
+// (status is on stderr), so the wrapper captures stdout and cd's when non-empty;
+// everything else passes through. rm/remove usually print nothing → no cd.
 // Uses `local`, so this is bash/zsh only — not portable to a pure POSIX sh.
 const BASH_ZSH_WRAPPER: &str = r#"tonic() {
     case "$1" in
-        add|cd)
+        add|cd|rm|remove)
             local __tonic_dir
             __tonic_dir="$(command tonic "$@")" || return
             [ -n "$__tonic_dir" ] && cd "$__tonic_dir"
@@ -555,7 +574,7 @@ const BASH_ZSH_WRAPPER: &str = r#"tonic() {
 
 const FISH_WRAPPER: &str = r#"function tonic
     switch $argv[1]
-        case add cd
+        case add cd rm remove
             set -l __tonic_dir (command tonic $argv); or return
             test -n "$__tonic_dir"; and cd $__tonic_dir
         case '*'
