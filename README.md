@@ -20,9 +20,11 @@ but the installed binary is `tonic`.
 
 ### Shell integration (optional)
 
-`tonic` can drop you straight into a worktree after `add`, and `tonic cd <branch>`
-jumps to an existing one. A binary can't change its parent shell's directory, so
-this is a small shell function you source once. Add to your shell's rc:
+`tonic` can drop you straight into a worktree after `add`, `tonic cd <branch>`
+jumps to an existing one, and removing the worktree you're standing in moves you
+back to the main worktree instead of stranding you in a deleted directory. A
+binary can't change its parent shell's directory, so this is a small shell
+function you source once. Add to your shell's rc:
 
 ```sh
 # ~/.bashrc or ~/.zshrc
