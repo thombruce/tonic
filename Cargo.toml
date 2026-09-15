@@ -2,7 +2,7 @@
 # Published as "git-tonic" because "tonic" is taken on crates.io (the gRPC
 # crate). The installed binary is still "tonic" — see [[bin]] below.
 name = "git-tonic"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "A git worktree companion"
 license = "MIT"
