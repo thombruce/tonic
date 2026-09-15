@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use owo_colors::{OwoColorize, Stream};
 use serde::Deserialize;
+use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
@@ -550,9 +551,10 @@ pub fn list() -> Result<()> {
     // The current worktree is the one whose path is the invoking working tree.
     let current = repo.root.as_deref().and_then(|r| std::fs::canonicalize(r).ok());
     let width = worktrees.iter().map(|w| w.label.chars().count()).max().unwrap_or(0);
-    // Candidates for lineage inference: all local branches (so the annotation
-    // can name stacked ancestors that don't have their own worktree, #37).
-    let branches = local_branches(&repo);
+    // Branch tips + trunk drive lineage inference (#37); the annotation can name
+    // stacked ancestors that have no worktree of their own.
+    let tips = branch_tips(&repo);
+    let default = default_branch(&tips);
 
     for w in &worktrees {
         let is_bare = w.bare;
@@ -592,8 +594,8 @@ pub fn list() -> Result<()> {
             String::new()
         };
         // Stack lineage: only annotate a genuine stack (branch sits on another
-        // branch, not just main) — a chain of `root → … → branch`, dimmed.
-        let chain = lineage(&repo, &w.label, &branches);
+        // branch, not just the trunk) — a chain of `root → … → branch`, dimmed.
+        let chain = default.map(|d| lineage(&repo, &w.label, &tips, d)).unwrap_or_default();
         let stack = if chain.len() >= 3 {
             let s = format!("  {}", chain.join(" → "));
             format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
@@ -605,14 +607,28 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
-/// All local branch names.
-fn local_branches(repo: &Repo) -> Vec<String> {
-    git_capture(
+/// Map of commit sha → local branch name(s) whose tip is that commit. One
+/// `for-each-ref` — the basis for cheap lineage (no per-pair git calls).
+fn branch_tips(repo: &Repo) -> HashMap<String, Vec<String>> {
+    let out = git_capture(
         Some(repo.cwd()),
-        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        &["for-each-ref", "--format=%(objectname) %(refname:short)", "refs/heads/"],
     )
-    .map(|s| s.lines().map(str::to_string).collect())
-    .unwrap_or_default()
+    .unwrap_or_default();
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for line in out.lines() {
+        if let Some((sha, name)) = line.split_once(' ') {
+            map.entry(sha.to_string()).or_default().push(name.to_string());
+        }
+    }
+    map
+}
+
+/// The repo's trunk among the local branches: `main`, else `master`.
+/// ponytail: hardcoded pair; a configurable default branch is tracked in #46.
+fn default_branch(tips: &HashMap<String, Vec<String>>) -> Option<&'static str> {
+    let names: Vec<&str> = tips.values().flatten().map(String::as_str).collect();
+    ["main", "master"].into_iter().find(|d| names.contains(d))
 }
 
 /// True if `ancestor` is an ancestor of `descendant` (both branch names).
@@ -627,60 +643,43 @@ fn is_ancestor(repo: &Repo, ancestor: &str, descendant: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Commit count on `to` not in `from` (`git rev-list --count from..to`).
-fn ahead_count(repo: &Repo, from: &str, to: &str) -> Option<usize> {
-    git_capture(Some(repo.cwd()), &["rev-list", "--count", &format!("{from}..{to}")])
-        .ok()?
-        .parse()
-        .ok()
-}
-
-/// Infer `node`'s parent branch from the commit graph: the nearest *strict*
-/// ancestor among `candidates` (smallest positive commit distance), else the
-/// default branch (main/master) if it's an ancestor, else `None`. An empty
-/// branch sitting at its base's commit has no strict ancestor there, so it
-/// nests under main until it has a commit — transient and self-healing.
-fn infer_parent(repo: &Repo, node: &str, candidates: &[String]) -> Option<String> {
-    let mut best: Option<(usize, String)> = None;
-    for c in candidates {
-        if c == node || !is_ancestor(repo, c, node) {
-            continue;
-        }
-        if let Some(d) = ahead_count(repo, c, node) {
-            if d > 0 && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
-                best = Some((d, c.clone()));
+/// The stack lineage for `branch` as `root → … → branch`, read from a single
+/// first-parent walk bounded to the commits above `default` (so cost is the
+/// stack height, not the repo's history). Intermediate branch tips on that walk
+/// are the stack's lower branches. A chain of length < 3 means "not a stack"
+/// (a branch directly on the trunk yields `[default, branch]`) → no annotation.
+///
+/// `branch`'s own tip is skipped, so an empty branch sitting at its base's
+/// commit yields `[default, branch]` — no lineage until it has a commit of its
+/// own (transient, self-healing). ~2 git calls total, independent of the number
+/// of branches and of history depth (contrast the old per-pair scan).
+///
+/// Assumes linear stacks (`--first-parent`): an ancestor branch reachable only
+/// through a merge's second parent won't be named — matches the stated scope.
+fn lineage(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>, default: &str) -> Vec<String> {
+    // The guard is load-bearing twice over: correctness (a branch not descended
+    // from the trunk isn't a stack) and cost — without it, a diverged/orphan
+    // branch would rev-list its entire history (`^default` excludes nothing).
+    if branch == default || !is_ancestor(repo, default, branch) {
+        return vec![branch.to_string()];
+    }
+    let revs = git_capture(
+        Some(repo.cwd()),
+        &["rev-list", "--first-parent", branch, &format!("^{default}")],
+    )
+    .unwrap_or_default();
+    let mut chain = vec![branch.to_string()];
+    // skip(1): the first rev is branch's own tip; ancestors are strictly below.
+    for sha in revs.lines().skip(1) {
+        if let Some(names) = tips.get(sha) {
+            for name in names {
+                if name != branch && name != default && !chain.iter().any(|c| c == name) {
+                    chain.push(name.clone());
+                }
             }
         }
     }
-    if let Some((_, label)) = best {
-        return Some(label);
-    }
-    for default in ["main", "master"] {
-        if default != node
-            && candidates.iter().any(|c| c == default)
-            && is_ancestor(repo, default, node)
-        {
-            return Some(default.to_string());
-        }
-    }
-    None
-}
-
-/// The inferred branch lineage from the stack root down to `branch`
-/// (`root → … → branch`). Length 1 means no ancestor (not a stack). Considers
-/// all local branches, so the chain can name ancestors that have no worktree.
-/// ponytail: O(branches) ancestry checks per step; fine at realistic branch
-/// counts — memoize/batch if repos with many branches feel slow.
-fn lineage(repo: &Repo, branch: &str, candidates: &[String]) -> Vec<String> {
-    let mut chain = vec![branch.to_string()];
-    let mut current = branch.to_string();
-    while let Some(parent) = infer_parent(repo, &current, candidates) {
-        if chain.iter().any(|c| c == &parent) {
-            break; // defensive: never loop on a cyclic inference
-        }
-        chain.push(parent.clone());
-        current = parent;
-    }
+    chain.push(default.to_string());
     chain.reverse();
     chain
 }
