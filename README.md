@@ -59,10 +59,14 @@ the branch.
 2. **No local branch, but a remote has it** → create a local branch tracking the
    remote (`origin` preferred; `--remote <name>` to pick among several).
    Requires the remote-tracking ref to exist locally — `git fetch` first if not.
-3. **Nowhere** → create a new branch from `HEAD`.
+3. **Nowhere** → create a new branch from `HEAD` (the current worktree's HEAD, so
+   a branch created from another worktree stacks on it). Set `base` in config to
+   root new branches at a fixed ref (e.g. `main`) instead.
 
 Flags override the default: `-b` forces a new branch (from `HEAD`, skipping the
-remote-tracking step), `--base <ref>` starts a new branch from `<ref>`.
+remote-tracking step), `--base <ref>` starts a new branch from `<ref>` (overrides
+the `base` config). `base`/`--base` only apply when *creating* a new branch — they
+have no effect when checking out an existing local or remote branch.
 
 ## Configuration
 
@@ -85,6 +89,11 @@ more specific file, restate the full list there.
 # working tree), "{branch}" bare. A "/" in a branch name is flattened to "-"
 # in the path. Example override — nest worktrees inside the repo instead:
 worktree_path = "{repo}/.worktrees/{branch}"
+
+# Default start-point (any ref) for a NEW branch, when --base isn't given.
+# Without this, new branches are created from the current worktree's HEAD.
+# No effect when checking out an existing local or remote branch.
+base = "main"
 
 # Per-pattern transfer mode for entries listed in .worktreeinclude.
 # Default mode is "copy".

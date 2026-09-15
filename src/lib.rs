@@ -16,6 +16,10 @@ struct Config {
     /// dir. Placeholders: {repo}, {branch}. Default: "{repo}-{branch}" (normal
     /// repo) or "{branch}" (bare).
     worktree_path: Option<String>,
+    /// Default start-point (any ref) for a *new* branch when `--base` isn't
+    /// given; with neither, a new branch is created from HEAD. No effect when
+    /// checking out an existing local or remote branch.
+    base: Option<String>,
     /// Per-pattern mode overrides for entries listed in `.worktreeinclude`.
     include: Option<Vec<Include>>,
     hooks: Option<Vec<Hook>>,
@@ -71,6 +75,9 @@ impl Config {
     fn merge(&mut self, higher: Config) {
         if higher.worktree_path.is_some() {
             self.worktree_path = higher.worktree_path;
+        }
+        if higher.base.is_some() {
+            self.base = higher.base;
         }
         if higher.include.is_some() {
             self.include = higher.include;
@@ -387,6 +394,11 @@ pub fn add(
         }
     }
 
+    // Start point for a new branch: --base flag, else the config `base` default.
+    // The config only supplies the start point; it never forces a new branch
+    // (checking out an existing/remote branch above is unaffected).
+    let effective_base = base.or(cfg.base.as_deref());
+
     let path_str = path.to_string_lossy().into_owned();
     let mut args: Vec<String> = vec!["worktree".into(), "add".into()];
     let mut tracking: Option<String> = None;
@@ -405,11 +417,11 @@ pub fn add(
                 args.push(format!("{r}/{branch}"));
                 tracking = Some(format!("{r}/{branch}"));
             }
-            None => new_branch_args(&mut args, branch, &path_str, base),
+            None => new_branch_args(&mut args, branch, &path_str, effective_base),
         }
     } else {
         // -b / --base: force a new branch.
-        new_branch_args(&mut args, branch, &path_str, base);
+        new_branch_args(&mut args, branch, &path_str, effective_base);
     }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -875,13 +887,11 @@ mod tests {
     fn merge_later_wins_per_key() {
         let mut base = Config {
             worktree_path: Some("a".into()),
-            include: None,
-            hooks: None,
+            ..Config::default()
         };
         base.merge(Config {
             worktree_path: Some("b".into()),
-            include: None,
-            hooks: None,
+            ..Config::default()
         });
         assert_eq!(base.worktree_path.as_deref(), Some("b"));
     }
@@ -951,9 +961,8 @@ mod tests {
     #[test]
     fn mode_defaults_to_copy() {
         let cfg = Config {
-            worktree_path: None,
             include: Some(vec![Include { pattern: "node_modules".into(), mode: Mode::Symlink }]),
-            hooks: None,
+            ..Config::default()
         };
         assert_eq!(cfg.mode_for("node_modules"), Mode::Symlink);
         assert_eq!(cfg.mode_for(".env"), Mode::Copy);
