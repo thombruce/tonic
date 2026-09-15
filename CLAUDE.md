@@ -41,6 +41,8 @@ Two source files. `src/main.rs` is a thin `clap` shell: each subcommand is a `Cm
 
 **`add` branch resolution** (see `add`): local branch → check out (error if already checked out elsewhere — one branch, one worktree); else a remote with the branch → local tracking branch (`choose_remote`: `origin` preferred, `--remote` to disambiguate, matches existing `refs/remotes/*` only — no fetch); else new branch from HEAD. `-b`/`--base` force a new branch and skip the remote step.
 
+**`list` stack tree** (`infer_parent_label`): worktrees are rendered as a tree by *inferring* each branch's parent from the commit graph — **no stored state**, no metadata file (#37). Parent = the nearest *strict* ancestor branch among the worktrees (smallest positive `rev-list --count`); an empty branch sitting at its base's commit falls back to nesting under `main`/`master`. Detached/bare worktrees have no branch to place and render flat. Inference reflects the current graph, so it's honest-but-fragile under rebase (a rebased parent stops being an ancestor until the child is re-stacked) — that's intended. Rebase/re-parenting is explicitly out of scope.
+
 **`rm`/`cd` worktree resolution** (`resolve_worktree`): a worktree is a directory, not its current branch, so resolution matches in order — the branch currently checked out, then the path `add` would use for the name (`worktree_path_for`, the same computation `add` runs), then the worktree's dir basename. This keeps `rm`/`cd` working when a worktree's HEAD is detached or switched (e.g. after `gh stack checkout`).
 
 **Hooks** run via `sh -c` in the new worktree dir. Events: `post_create` (after add), `pre_remove` (before rm). Command strings are templated with `{repo}`, `{branch}`, `{worktree_path}` (see `render`).

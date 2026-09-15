@@ -549,48 +549,145 @@ pub fn list() -> Result<()> {
 
     // The current worktree is the one whose path is the invoking working tree.
     let current = repo.root.as_deref().and_then(|r| std::fs::canonicalize(r).ok());
-    let width = worktrees.iter().map(|w| w.label.chars().count()).max().unwrap_or(0);
+    let is_current = |w: &Worktree| {
+        current.is_some() && std::fs::canonicalize(&w.path).ok() == current
+    };
 
-    for w in &worktrees {
-        let is_bare = w.bare;
-        // The bare entry is the anchor, not an actionable worktree: dim it, and
-        // it's never "current" (that belongs to an actual checkout).
-        let is_current =
-            !is_bare && current.is_some() && std::fs::canonicalize(&w.path).ok() == current;
-        let dirty = !is_bare && is_dirty(&w.path);
+    // Bare anchor(s): the repo anchor, not actionable — dim, print first.
+    for w in worktrees.iter().filter(|w| w.bare) {
+        print_row(0, false, &w.label, &w.path, false, true);
+    }
 
-        let label = format!("{:<width$}", w.label);
-        let path = w.path.display().to_string();
+    // Branch-bearing worktrees form the stack tree; a worktree's parent is the
+    // nearest-ancestor worktree branch (#37, inferred from the commit graph, no
+    // stored state). Detached worktrees have no branch to place → flat, after.
+    let nodes: Vec<StackNode> = worktrees
+        .iter()
+        .filter(|w| !w.bare && w.label != "detached")
+        .map(|w| StackNode {
+            path: w.path.clone(),
+            label: w.label.clone(),
+            current: is_current(w),
+            dirty: is_dirty(&w.path),
+            parent: None,
+        })
+        .collect();
+    let labels: Vec<String> = nodes.iter().map(|n| n.label.clone()).collect();
+    let candidates: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let nodes: Vec<StackNode> = nodes
+        .into_iter()
+        .map(|n| StackNode { parent: infer_parent_label(&repo, &n.label, &candidates), ..n })
+        .collect();
 
-        if is_bare {
-            println!(
-                "  {}  {}",
-                label.if_supports_color(Stream::Stdout, |t| t.dimmed()),
-                path.if_supports_color(Stream::Stdout, |t| t.dimmed()),
-            );
-            continue;
-        }
+    print_forest(&nodes, None, 0);
 
-        let marker = if is_current {
-            format!("{}", "*".if_supports_color(Stream::Stdout, |t| t.green()))
-        } else {
-            " ".to_string()
-        };
-        let label = if is_current {
-            let style = owo_colors::Style::new().green().bold();
-            format!("{}", label.if_supports_color(Stream::Stdout, |t| t.style(style)))
-        } else {
-            label
-        };
-        let path = format!("{}", path.if_supports_color(Stream::Stdout, |t| t.dimmed()));
-        let dirty = if dirty {
-            format!(" {}", "(dirty)".if_supports_color(Stream::Stdout, |t| t.yellow()))
-        } else {
-            String::new()
-        };
-        println!("{marker} {label}  {path}{dirty}");
+    for w in worktrees.iter().filter(|w| !w.bare && w.label == "detached") {
+        print_row(0, is_current(w), &w.label, &w.path, false, false);
     }
     Ok(())
+}
+
+/// A branch-bearing worktree and its inferred parent (nearest-ancestor branch).
+struct StackNode {
+    path: PathBuf,
+    label: String,
+    current: bool,
+    dirty: bool,
+    parent: Option<String>,
+}
+
+/// Print the forest depth-first: each node under `parent`, then its children.
+fn print_forest(nodes: &[StackNode], parent: Option<&str>, depth: usize) {
+    for n in nodes.iter().filter(|n| n.parent.as_deref() == parent) {
+        print_row(depth, n.current, &n.label, &n.path, n.dirty, false);
+        print_forest(nodes, Some(&n.label), depth.saturating_add(1));
+    }
+}
+
+/// Render one worktree row: `<marker> <indent><label>  <path> (dirty)`, with
+/// color gated to a terminal. Bare rows are dimmed and never current.
+fn print_row(depth: usize, current: bool, label: &str, path: &Path, dirty: bool, bare: bool) {
+    let indent = "  ".repeat(depth);
+    let path_s = path.display().to_string();
+    if bare {
+        println!(
+            "  {indent}{}  {}",
+            label.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+            path_s.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+        );
+        return;
+    }
+    let marker = if current {
+        format!("{}", "*".if_supports_color(Stream::Stdout, |t| t.green()))
+    } else {
+        " ".to_string()
+    };
+    let label_s = if current {
+        let style = owo_colors::Style::new().green().bold();
+        format!("{}", label.if_supports_color(Stream::Stdout, |t| t.style(style)))
+    } else {
+        label.to_string()
+    };
+    let path_c = format!("{}", path_s.if_supports_color(Stream::Stdout, |t| t.dimmed()));
+    let dirty_c = if dirty {
+        format!(" {}", "(dirty)".if_supports_color(Stream::Stdout, |t| t.yellow()))
+    } else {
+        String::new()
+    };
+    println!("{marker} {indent}{label_s}  {path_c}{dirty_c}");
+}
+
+/// True if `ancestor` is an ancestor of `descendant` (both branch names).
+fn is_ancestor(repo: &Repo, ancestor: &str, descendant: &str) -> bool {
+    Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(repo.cwd())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Commit count on `to` not in `from` (`git rev-list --count from..to`).
+fn ahead_count(repo: &Repo, from: &str, to: &str) -> Option<usize> {
+    let out = Command::new("git")
+        .args(["rev-list", "--count", &format!("{from}..{to}")])
+        .current_dir(repo.cwd())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()?.trim().parse().ok()
+}
+
+/// Infer `node`'s parent from the commit graph (no stored state):
+/// 1. the *nearest strict ancestor* among candidates — the branch immediately
+///    below it in a committed stack (smallest positive commit distance);
+/// 2. failing that (an empty branch sitting at its base's commit — common right
+///    after `tonic add`), the default branch if it's an ancestor, so the branch
+///    still nests under main/master;
+/// 3. otherwise `None` → a tree root.
+fn infer_parent_label(repo: &Repo, node: &str, candidates: &[&str]) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for &c in candidates {
+        if c == node || !is_ancestor(repo, c, node) {
+            continue;
+        }
+        if let Some(d) = ahead_count(repo, c, node) {
+            if d > 0 && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                best = Some((d, c.to_string()));
+            }
+        }
+    }
+    if let Some((_, label)) = best {
+        return Some(label);
+    }
+    for default in ["main", "master"] {
+        if default != node && candidates.contains(&default) && is_ancestor(repo, default, node) {
+            return Some(default.to_string());
+        }
+    }
+    None
 }
 
 /// True if the worktree at `path` has uncommitted changes (tracked edits or
