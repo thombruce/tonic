@@ -22,6 +22,10 @@ enum Cmd {
         /// When BRANCH exists on multiple remotes, track this one
         #[arg(long)]
         remote: Option<String>,
+        /// Fetch before resolving, so a branch that's on a remote but not yet
+        /// fetched is picked up
+        #[arg(long)]
+        fetch: bool,
     },
     /// List all worktrees
     #[command(visible_alias = "ls")]
@@ -53,8 +57,8 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
-        Cmd::Add { branch, new_branch, base, remote } => {
-            tonic::add(&branch, new_branch, base.as_deref(), remote.as_deref())
+        Cmd::Add { branch, new_branch, base, remote, fetch } => {
+            tonic::add(&branch, new_branch, base.as_deref(), remote.as_deref(), fetch)
         }
         Cmd::List => tonic::list(),
         Cmd::Cd { branch } => tonic::cd(&branch),

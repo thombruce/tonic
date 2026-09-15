@@ -40,7 +40,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 ## Commands
 
 ```
-tonic add <branch> [-b] [--base <ref>] [--remote <name>]   # create a worktree
+tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
 tonic list                     # list worktrees (alias: ls; marks current with *, flags dirty ones)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic rm  <branch> [-f] [-d]   # remove a worktree (alias: remove; -f: force, -d: also delete branch)
@@ -58,7 +58,8 @@ the branch.
    another worktree, tonic errors and points you at `tonic cd`.)
 2. **No local branch, but a remote has it** → create a local branch tracking the
    remote (`origin` preferred; `--remote <name>` to pick among several).
-   Requires the remote-tracking ref to exist locally — `git fetch` first if not.
+   Matches the remote-tracking ref if it exists locally; pass `--fetch` (or set
+   `fetch = true`) to fetch first so a branch not yet fetched is picked up.
 3. **Nowhere** → create a new branch from `HEAD` (the current worktree's HEAD, so
    a branch created from another worktree stacks on it). Set `base` in config to
    root new branches at a fixed ref (e.g. `main`) instead.
@@ -94,6 +95,12 @@ worktree_path = "{repo}/.worktrees/{branch}"
 # Without this, new branches are created from the current worktree's HEAD.
 # No effect when checking out an existing local or remote branch.
 base = "main"
+
+# Fetch before resolving a non-local branch, so a branch that's on a remote but
+# not yet fetched is picked up (like passing --fetch every time). Only fetches
+# when the branch isn't already local; non-fatal if offline. Prefer the --fetch
+# flag if you only want it occasionally.
+fetch = true
 
 # Per-pattern transfer mode for entries listed in .worktreeinclude.
 # Default mode is "copy".

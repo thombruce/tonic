@@ -20,6 +20,9 @@ struct Config {
     /// given; with neither, a new branch is created from HEAD. No effect when
     /// checking out an existing local or remote branch.
     base: Option<String>,
+    /// Fetch before resolving a non-local branch, so a branch that exists on a
+    /// remote but hasn't been fetched is picked up. Mirrors the `--fetch` flag.
+    fetch: Option<bool>,
     /// Per-pattern mode overrides for entries listed in `.worktreeinclude`.
     include: Option<Vec<Include>>,
     hooks: Option<Vec<Hook>>,
@@ -78,6 +81,9 @@ impl Config {
         }
         if higher.base.is_some() {
             self.base = higher.base;
+        }
+        if higher.fetch.is_some() {
+            self.fetch = higher.fetch;
         }
         if higher.include.is_some() {
             self.include = higher.include;
@@ -353,9 +359,11 @@ pub fn add(
     new_branch: bool,
     base: Option<&str>,
     remote: Option<&str>,
+    fetch: bool,
 ) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
+    let fetch = fetch || cfg.fetch.unwrap_or(false);
 
     let path = worktree_path_for(&repo, &cfg, branch);
     if path.exists() {
@@ -411,6 +419,19 @@ pub fn add(
         // No local branch: check remotes. #15 — if exactly one remote (origin
         // preferred) has it, create a local branch tracking it. Otherwise fall
         // through to a new branch from HEAD.
+        // #18: optionally fetch first so a branch that exists on a remote but
+        // hasn't been fetched is picked up. Non-fatal — offline still resolves
+        // against existing refs.
+        if fetch {
+            let mut fargs = vec!["fetch", "--quiet"];
+            match remote {
+                Some(r) => fargs.push(r),
+                None => fargs.push("--all"),
+            }
+            if git_run(repo.cwd(), &fargs).is_err() {
+                eprintln!("warning: fetch failed; resolving with existing refs");
+            }
+        }
         match choose_remote(&repo, branch, remote)? {
             Some(r) => {
                 args.extend(["--track".into(), "-b".into(), branch.into(), path_str.clone()]);
