@@ -617,6 +617,8 @@ fn local_branches(repo: &Repo) -> Vec<String> {
 
 /// True if `ancestor` is an ancestor of `descendant` (both branch names).
 fn is_ancestor(repo: &Repo, ancestor: &str, descendant: &str) -> bool {
+    // Bypasses git_run/git_capture on purpose (like is_ignored): --is-ancestor
+    // signals via exit code — exit 1 means "not an ancestor", a normal result.
     Command::new("git")
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
         .current_dir(repo.cwd())
@@ -627,15 +629,10 @@ fn is_ancestor(repo: &Repo, ancestor: &str, descendant: &str) -> bool {
 
 /// Commit count on `to` not in `from` (`git rev-list --count from..to`).
 fn ahead_count(repo: &Repo, from: &str, to: &str) -> Option<usize> {
-    let out = Command::new("git")
-        .args(["rev-list", "--count", &format!("{from}..{to}")])
-        .current_dir(repo.cwd())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8(out.stdout).ok()?.trim().parse().ok()
+    git_capture(Some(repo.cwd()), &["rev-list", "--count", &format!("{from}..{to}")])
+        .ok()?
+        .parse()
+        .ok()
 }
 
 /// Infer `node`'s parent branch from the commit graph: the nearest *strict*
