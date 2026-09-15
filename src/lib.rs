@@ -478,9 +478,31 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
     // stdout so the shell integration can `cd` there instead of leaving the
     // shell stranded in a deleted directory (#29).
     if removing_current {
-        println!("{}", repo.main.display());
+        println!("{}", home_checkout(&repo).display());
     }
     Ok(())
+}
+
+/// A worktree to return to after removing the current one: the main working tree
+/// for a normal repo; for a bare repo the `main`/`master` (or any remaining)
+/// worktree, since `repo.main` there is the bare dir, which has no checkout (#35).
+fn home_checkout(repo: &Repo) -> PathBuf {
+    if !repo.bare {
+        return repo.main.clone();
+    }
+    // Run from repo.main (the bare dir, which exists) — the current worktree we
+    // just removed may be gone.
+    if let Ok(list) = git_capture(Some(&repo.main), &["worktree", "list", "--porcelain"]) {
+        for branch in ["main", "master"] {
+            if let Some(p) = parse_worktree(&list, branch) {
+                return p;
+            }
+        }
+        if let Some(w) = parse_worktrees(&list).into_iter().find(|w| !w.bare) {
+            return w.path;
+        }
+    }
+    repo.main.clone()
 }
 
 // ---------------------------------------------------------------------------
