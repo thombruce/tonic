@@ -407,9 +407,19 @@ pub fn add(
     // (checking out an existing/remote branch above is unaffected).
     let effective_base = base.or(cfg.base.as_deref());
 
+    // The parent to record for a *new* branch (#37): the base we branch from —
+    // `--base`/`base`, else the branch currently checked out in this worktree.
+    // Recorded after creation so the stack tree knows the intent even before the
+    // new branch has any commits of its own.
+    let current_branch = git_capture(Some(repo.cwd()), &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .filter(|b| b != "HEAD" && !b.is_empty());
+    let new_parent = effective_base.map(str::to_string).or(current_branch);
+
     let path_str = path.to_string_lossy().into_owned();
     let mut args: Vec<String> = vec!["worktree".into(), "add".into()];
     let mut tracking: Option<String> = None;
+    let mut created_new = false;
 
     if !force_new && local {
         // Existing local branch, not checked out anywhere: check it out.
@@ -438,15 +448,26 @@ pub fn add(
                 args.push(format!("{r}/{branch}"));
                 tracking = Some(format!("{r}/{branch}"));
             }
-            None => new_branch_args(&mut args, branch, &path_str, effective_base),
+            None => {
+                new_branch_args(&mut args, branch, &path_str, effective_base);
+                created_new = true;
+            }
         }
     } else {
         // -b / --base: force a new branch.
         new_branch_args(&mut args, branch, &path_str, effective_base);
+        created_new = true;
     }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     git_run(repo.cwd(), &arg_refs)?;
+
+    // Record the stack parent for a newly-created branch (#37).
+    if created_new {
+        if let Some(parent) = new_parent.filter(|p| p != branch) {
+            git_config_set(&repo, &format!("branch.{branch}.tonic-parent"), &parent);
+        }
+    }
 
     transfer_includes(&repo, &path, &cfg)?;
     run_hooks(&cfg, "post_create", &repo, branch, &path)?;
@@ -558,12 +579,15 @@ pub fn list() -> Result<()> {
         print_row(0, false, &w.label, &w.path, false, true);
     }
 
-    // Branch-bearing worktrees form the stack tree; a worktree's parent is the
-    // nearest-ancestor worktree branch (#37, inferred from the commit graph, no
-    // stored state). Detached worktrees have no branch to place → flat, after.
+    // Branch-bearing worktrees form the stack tree (#37). A worktree's parent is
+    // the branch it was created from, recorded at `add` time in git config
+    // (intent — survives an empty branch that sits at its base's commit); we
+    // fall back to inferring the nearest-ancestor branch from the commit graph
+    // for branches tonic didn't create. Detached worktrees have no branch to
+    // place → flat, after.
     let nodes: Vec<StackNode> = worktrees
         .iter()
-        .filter(|w| !w.bare && w.label != "detached")
+        .filter(|w| !w.bare && !w.detached)
         .map(|w| StackNode {
             path: w.path.clone(),
             label: w.label.clone(),
@@ -576,12 +600,22 @@ pub fn list() -> Result<()> {
     let candidates: Vec<&str> = labels.iter().map(String::as_str).collect();
     let nodes: Vec<StackNode> = nodes
         .into_iter()
-        .map(|n| StackNode { parent: infer_parent_label(&repo, &n.label, &candidates), ..n })
+        .map(|n| {
+            // Recorded parent wins, but only if that branch is itself a node
+            // (has a worktree) — otherwise the child would orphan; fall back to
+            // inference, which always yields a node label or None.
+            let parent = stored_parent(&repo, &n.label)
+                .filter(|p| candidates.contains(&p.as_str()))
+                .or_else(|| infer_parent_label(&repo, &n.label, &candidates));
+            StackNode { parent, ..n }
+        })
         .collect();
 
-    print_forest(&nodes, None, 0);
+    for (depth, n) in stack_order(&nodes) {
+        print_row(depth, n.current, &n.label, &n.path, n.dirty, false);
+    }
 
-    for w in worktrees.iter().filter(|w| !w.bare && w.label == "detached") {
+    for w in worktrees.iter().filter(|w| !w.bare && w.detached) {
         print_row(0, is_current(w), &w.label, &w.path, false, false);
     }
     Ok(())
@@ -596,12 +630,28 @@ struct StackNode {
     parent: Option<String>,
 }
 
-/// Print the forest depth-first: each node under `parent`, then its children.
-fn print_forest(nodes: &[StackNode], parent: Option<&str>, depth: usize) {
-    for n in nodes.iter().filter(|n| n.parent.as_deref() == parent) {
-        print_row(depth, n.current, &n.label, &n.path, n.dirty, false);
-        print_forest(nodes, Some(&n.label), depth.saturating_add(1));
+/// Depth-first order of the forest as `(depth, node)`: each root, then its
+/// children under it. Pure (no I/O) so rendering can be unit-tested. The
+/// `depth >= nodes.len()` guard bounds recursion against a malformed parent
+/// cycle (a real tree can't be deeper than its node count).
+fn stack_order(nodes: &[StackNode]) -> Vec<(usize, &StackNode)> {
+    fn walk<'a>(
+        nodes: &'a [StackNode],
+        parent: Option<&str>,
+        depth: usize,
+        out: &mut Vec<(usize, &'a StackNode)>,
+    ) {
+        if depth >= nodes.len() {
+            return;
+        }
+        for n in nodes.iter().filter(|n| n.parent.as_deref() == parent) {
+            out.push((depth, n));
+            walk(nodes, Some(&n.label), depth.saturating_add(1), out);
+        }
     }
+    let mut out = Vec::new();
+    walk(nodes, None, 0, &mut out);
+    out
 }
 
 /// Render one worktree row: `<marker> <indent><label>  <path> (dirty)`, with
@@ -688,6 +738,37 @@ fn infer_parent_label(repo: &Repo, node: &str, candidates: &[&str]) -> Option<St
         }
     }
     None
+}
+
+/// The parent branch recorded for `branch` at `add` time, if any. Stored in git
+/// config (`branch.<name>.tonic-parent`) — namespaced, shared across worktrees,
+/// no bespoke file. Captures the intended stack even for an empty branch.
+fn stored_parent(repo: &Repo, branch: &str) -> Option<String> {
+    git_config_get(repo, &format!("branch.{branch}.tonic-parent"))
+}
+
+/// Read a git config value; `None` if unset or on error (can't use git_capture,
+/// which bails on the nonzero exit that "unset" produces).
+fn git_config_get(repo: &Repo, key: &str) -> Option<String> {
+    let out = Command::new("git")
+        .args(["config", "--get", key])
+        .current_dir(repo.cwd())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let val = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!val.is_empty()).then_some(val)
+}
+
+/// Set a git config value, best-effort (recording stack intent must never fail
+/// the `add` it decorates).
+fn git_config_set(repo: &Repo, key: &str, value: &str) {
+    let _ = Command::new("git")
+        .args(["config", key, value])
+        .current_dir(repo.cwd())
+        .status();
 }
 
 /// True if the worktree at `path` has uncommitted changes (tracked edits or
@@ -777,11 +858,15 @@ end
 
 struct Worktree {
     path: PathBuf,
-    /// Branch name, or "detached". Display label; use `bare` to test the anchor.
+    /// Branch name, or "detached"/"bare" for display. Use the `bare`/`detached`
+    /// flags to test those states — a branch may literally be named either.
     label: String,
     /// True only for the bare-repo anchor entry (the standalone `bare` line),
-    /// not for a branch that happens to be named "bare".
+    /// not for a branch named "bare" (which arrives as `branch refs/heads/bare`).
     bare: bool,
+    /// True only for a detached HEAD (the standalone `detached` line), not for a
+    /// branch named "detached".
+    detached: bool,
 }
 
 /// Parse `git worktree list --porcelain`. Each block is a `worktree <path>`
@@ -791,6 +876,7 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
     let mut path: Option<PathBuf> = None;
     let mut label = String::from("detached");
     let mut bare = false;
+    let mut detached = false;
     for line in porcelain.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
             if let Some(prev) = path.take() {
@@ -798,22 +884,22 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
                     path: prev,
                     label: std::mem::replace(&mut label, "detached".into()),
                     bare: std::mem::take(&mut bare),
+                    detached: std::mem::take(&mut detached),
                 });
             }
             path = Some(PathBuf::from(p));
         } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
             label = b.to_string();
         } else if line == "bare" {
-            // Standalone `bare` line = the anchor entry; distinct from a branch
-            // literally named "bare" (which arrives as `branch refs/heads/bare`).
             bare = true;
             label = "bare".to_string();
         } else if line == "detached" {
+            detached = true;
             label = "detached".to_string();
         }
     }
     if let Some(p) = path {
-        out.push(Worktree { path: p, label, bare });
+        out.push(Worktree { path: p, label, bare, detached });
     }
     out
 }
@@ -1034,6 +1120,26 @@ mod tests {
                    worktree /repo/.worktrees/feat\nHEAD def\nbranch refs/heads/feat\n";
         assert_eq!(parse_worktree(out, "feat"), Some(PathBuf::from("/repo/.worktrees/feat")));
         assert_eq!(parse_worktree(out, "nope"), None);
+    }
+
+    #[test]
+    fn stack_order_nests_children_under_parents() {
+        let node = |label: &str, parent: Option<&str>| StackNode {
+            path: PathBuf::from(label),
+            label: label.into(),
+            current: false,
+            dirty: false,
+            parent: parent.map(Into::into),
+        };
+        let nodes = vec![
+            node("main", None),
+            node("a", Some("main")),
+            node("b", Some("a")),
+            node("c", Some("main")),
+        ];
+        let order: Vec<(usize, &str)> =
+            stack_order(&nodes).iter().map(|(d, n)| (*d, n.label.as_str())).collect();
+        assert_eq!(order, [(0, "main"), (1, "a"), (2, "b"), (1, "c")]);
     }
 
     #[test]
