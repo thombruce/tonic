@@ -550,6 +550,9 @@ pub fn list() -> Result<()> {
     // The current worktree is the one whose path is the invoking working tree.
     let current = repo.root.as_deref().and_then(|r| std::fs::canonicalize(r).ok());
     let width = worktrees.iter().map(|w| w.label.chars().count()).max().unwrap_or(0);
+    // Candidates for lineage inference: all local branches (so the annotation
+    // can name stacked ancestors that don't have their own worktree, #37).
+    let branches = local_branches(&repo);
 
     for w in &worktrees {
         let is_bare = w.bare;
@@ -588,9 +591,101 @@ pub fn list() -> Result<()> {
         } else {
             String::new()
         };
-        println!("{marker} {label}  {path}{dirty}");
+        // Stack lineage: only annotate a genuine stack (branch sits on another
+        // branch, not just main) — a chain of `root → … → branch`, dimmed.
+        let chain = lineage(&repo, &w.label, &branches);
+        let stack = if chain.len() >= 3 {
+            let s = format!("  {}", chain.join(" → "));
+            format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
+        } else {
+            String::new()
+        };
+        println!("{marker} {label}  {path}{dirty}{stack}");
     }
     Ok(())
+}
+
+/// All local branch names.
+fn local_branches(repo: &Repo) -> Vec<String> {
+    git_capture(
+        Some(repo.cwd()),
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    )
+    .map(|s| s.lines().map(str::to_string).collect())
+    .unwrap_or_default()
+}
+
+/// True if `ancestor` is an ancestor of `descendant` (both branch names).
+fn is_ancestor(repo: &Repo, ancestor: &str, descendant: &str) -> bool {
+    Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(repo.cwd())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Commit count on `to` not in `from` (`git rev-list --count from..to`).
+fn ahead_count(repo: &Repo, from: &str, to: &str) -> Option<usize> {
+    let out = Command::new("git")
+        .args(["rev-list", "--count", &format!("{from}..{to}")])
+        .current_dir(repo.cwd())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()?.trim().parse().ok()
+}
+
+/// Infer `node`'s parent branch from the commit graph: the nearest *strict*
+/// ancestor among `candidates` (smallest positive commit distance), else the
+/// default branch (main/master) if it's an ancestor, else `None`. An empty
+/// branch sitting at its base's commit has no strict ancestor there, so it
+/// nests under main until it has a commit — transient and self-healing.
+fn infer_parent(repo: &Repo, node: &str, candidates: &[String]) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for c in candidates {
+        if c == node || !is_ancestor(repo, c, node) {
+            continue;
+        }
+        if let Some(d) = ahead_count(repo, c, node) {
+            if d > 0 && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                best = Some((d, c.clone()));
+            }
+        }
+    }
+    if let Some((_, label)) = best {
+        return Some(label);
+    }
+    for default in ["main", "master"] {
+        if default != node
+            && candidates.iter().any(|c| c == default)
+            && is_ancestor(repo, default, node)
+        {
+            return Some(default.to_string());
+        }
+    }
+    None
+}
+
+/// The inferred branch lineage from the stack root down to `branch`
+/// (`root → … → branch`). Length 1 means no ancestor (not a stack). Considers
+/// all local branches, so the chain can name ancestors that have no worktree.
+/// ponytail: O(branches) ancestry checks per step; fine at realistic branch
+/// counts — memoize/batch if repos with many branches feel slow.
+fn lineage(repo: &Repo, branch: &str, candidates: &[String]) -> Vec<String> {
+    let mut chain = vec![branch.to_string()];
+    let mut current = branch.to_string();
+    while let Some(parent) = infer_parent(repo, &current, candidates) {
+        if chain.iter().any(|c| c == &parent) {
+            break; // defensive: never loop on a cyclic inference
+        }
+        chain.push(parent.clone());
+        current = parent;
+    }
+    chain.reverse();
+    chain
 }
 
 /// True if the worktree at `path` has uncommitted changes (tracked edits or
