@@ -646,13 +646,20 @@ fn is_ancestor(repo: &Repo, ancestor: &str, descendant: &str) -> bool {
 /// The stack lineage for `branch` as `root → … → branch`, read from a single
 /// first-parent walk bounded to the commits above `default` (so cost is the
 /// stack height, not the repo's history). Intermediate branch tips on that walk
-/// are the stack's lower branches. Length 1 means "not a stack" (no annotation).
+/// are the stack's lower branches. A chain of length < 3 means "not a stack"
+/// (a branch directly on the trunk yields `[default, branch]`) → no annotation.
 ///
 /// `branch`'s own tip is skipped, so an empty branch sitting at its base's
-/// commit yields just `[branch]` — no lineage until it has a commit of its own
-/// (transient, self-healing). This is ~2 git calls total, independent of the
-/// number of branches and of history depth (contrast the old per-pair scan).
+/// commit yields `[default, branch]` — no lineage until it has a commit of its
+/// own (transient, self-healing). ~2 git calls total, independent of the number
+/// of branches and of history depth (contrast the old per-pair scan).
+///
+/// Assumes linear stacks (`--first-parent`): an ancestor branch reachable only
+/// through a merge's second parent won't be named — matches the stated scope.
 fn lineage(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>, default: &str) -> Vec<String> {
+    // The guard is load-bearing twice over: correctness (a branch not descended
+    // from the trunk isn't a stack) and cost — without it, a diverged/orphan
+    // branch would rev-list its entire history (`^default` excludes nothing).
     if branch == default || !is_ancestor(repo, default, branch) {
         return vec![branch.to_string()];
     }
