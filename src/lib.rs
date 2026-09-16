@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use owo_colors::{OwoColorize, Stream};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
@@ -556,18 +556,40 @@ pub fn list() -> Result<()> {
     let tips = branch_tips(&repo);
     let default = default_branch(&tips);
 
+    // Pass 1: infer each branch-bearing worktree's lineage, and from those derive
+    // the worktree-children map (#37 scenario b) — a base row shows what stacks
+    // on it. A branch's immediate parent is the entry before it in its chain; if
+    // that parent is itself a worktree, this branch is its child. Restricted to
+    // worktree branches, so it's O(worktrees), not branch-count sensitive.
+    let wt_labels: HashSet<&str> =
+        worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
+    let mut chains: HashMap<String, Vec<String>> = HashMap::new();
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for w in worktrees.iter().filter(|w| !w.bare) {
+        let chain = default.map(|d| lineage(&repo, &w.label, &tips, d)).unwrap_or_default();
+        if let Some(parent) = chain.iter().rev().nth(1) {
+            // Record a child only under a non-trunk worktree parent: every branch
+            // is trivially a child of the trunk, which isn't a stack.
+            if Some(parent.as_str()) != default && wt_labels.contains(parent.as_str()) {
+                children.entry(parent.clone()).or_default().push(w.label.clone());
+            }
+        }
+        chains.insert(w.label.clone(), chain);
+    }
+    for kids in children.values_mut() {
+        kids.sort(); // deterministic order (chains iterate in HashMap order)
+    }
+
+    // Pass 2: render.
     for w in &worktrees {
-        let is_bare = w.bare;
         // The bare entry is the anchor, not an actionable worktree: dim it, and
         // it's never "current" (that belongs to an actual checkout).
         let is_current =
-            !is_bare && current.is_some() && std::fs::canonicalize(&w.path).ok() == current;
-        let dirty = !is_bare && is_dirty(&w.path);
-
+            !w.bare && current.is_some() && std::fs::canonicalize(&w.path).ok() == current;
         let label = format!("{:<width$}", w.label);
         let path = w.path.display().to_string();
 
-        if is_bare {
+        if w.bare {
             println!(
                 "  {}  {}",
                 label.if_supports_color(Stream::Stdout, |t| t.dimmed()),
@@ -588,21 +610,28 @@ pub fn list() -> Result<()> {
             label
         };
         let path = format!("{}", path.if_supports_color(Stream::Stdout, |t| t.dimmed()));
-        let dirty = if dirty {
+        let dirty = if is_dirty(&w.path) {
             format!(" {}", "(dirty)".if_supports_color(Stream::Stdout, |t| t.yellow()))
         } else {
             String::new()
         };
-        // Stack lineage: only annotate a genuine stack (branch sits on another
-        // branch, not just the trunk) — a chain of `root → … → branch`, dimmed.
-        let chain = default.map(|d| lineage(&repo, &w.label, &tips, d)).unwrap_or_default();
-        let stack = if chain.len() >= 3 {
-            let s = format!("  {}", chain.join(" → "));
-            format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
-        } else {
-            String::new()
+        // Ancestors: `root → … → branch`, only for a genuine stack (len >= 3).
+        let stack = match chains.get(&w.label) {
+            Some(chain) if chain.len() >= 3 => {
+                let s = format!("  {}", chain.join(" → "));
+                format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
+            }
+            _ => String::new(),
         };
-        println!("{marker} {label}  {path}{dirty}{stack}");
+        // Children: worktrees stacked on this one — `↳ child, child`.
+        let kids = match children.get(&w.label) {
+            Some(ks) if !ks.is_empty() => {
+                let s = format!("  ↳ {}", ks.join(", "));
+                format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
+            }
+            _ => String::new(),
+        };
+        println!("{marker} {label}  {path}{dirty}{stack}{kids}");
     }
     Ok(())
 }
