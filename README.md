@@ -52,13 +52,13 @@ tonic shell-init <shell>       # print the shell function for cd integration
 hooks. `rm` runs `pre_remove` hooks, removes the worktree, and optionally deletes
 the branch.
 
-Worktrees are **sibling directories**, so `list` stays flat. When a branch is
-stacked on another branch (not just `main`), its row is annotated with the
-inferred lineage — `main → baz → birthday`. A base worktree also shows the
-worktrees stacked directly on it — `↳ child, child`. Both are derived from the
-commit graph (no stored state); a freshly-created branch with no commits of its
-own shows no lineage yet and gains it once it has a commit. The lineage can name
-a stacked ancestor even when that ancestor has no worktree of its own.
+Worktrees are **sibling directories**, so `list` stays flat. When a branch is in
+a stack, its row is annotated with the inferred lineage, root-anchored:
+`main → baz → birthday`. A worktree with children stacked on it continues the
+chain — ` → child` for a single child, ` → [N]` for a fork of N. Derived from
+the commit graph (no stored state); a freshly-created branch with no commits of
+its own shows no lineage yet and gains it once it has a commit. The lineage can
+name a stacked ancestor even when that ancestor has no worktree of its own.
 
 ### How `tonic add <branch>` resolves the branch
 

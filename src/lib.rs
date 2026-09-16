@@ -615,23 +615,28 @@ pub fn list() -> Result<()> {
         } else {
             String::new()
         };
-        // Ancestors: `root → … → branch`, only for a genuine stack (len >= 3).
-        let stack = match chains.get(&w.label) {
-            Some(chain) if chain.len() >= 3 => {
-                let s = format!("  {}", chain.join(" → "));
-                format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
+        // Stack annotation, root-anchored: the ancestor chain `root → … → branch`
+        // continued into this branch's children — ` → child` for a single child,
+        // ` → [N]` for a fork. Shown when the branch is in a stack: it has an
+        // ancestor above the trunk (chain len >= 3) or a child of its own.
+        let empty = Vec::new();
+        let chain = chains.get(&w.label).unwrap_or(&empty);
+        let kids = children.get(&w.label).unwrap_or(&empty);
+        let stack = if chain.len() >= 3 || !kids.is_empty() {
+            let mut s = chain.join(" → ");
+            match kids.first() {
+                Some(only) if kids.len() == 1 => {
+                    s.push_str(" → ");
+                    s.push_str(only);
+                }
+                Some(_) => s.push_str(&format!(" → [{}]", kids.len())),
+                None => {}
             }
-            _ => String::new(),
+            format!("  {}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
+        } else {
+            String::new()
         };
-        // Children: worktrees stacked on this one — `↳ child, child`.
-        let kids = match children.get(&w.label) {
-            Some(ks) if !ks.is_empty() => {
-                let s = format!("  ↳ {}", ks.join(", "));
-                format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
-            }
-            _ => String::new(),
-        };
-        println!("{marker} {label}  {path}{dirty}{stack}{kids}");
+        println!("{marker} {label}  {path}{dirty}{stack}");
     }
     Ok(())
 }
