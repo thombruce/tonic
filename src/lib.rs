@@ -631,23 +631,22 @@ fn default_branch(tips: &HashMap<String, Vec<String>>) -> Option<&'static str> {
     ["main", "master"].into_iter().find(|d| names.contains(d))
 }
 
-/// True if `ancestor` is an ancestor of `descendant` (both branch names).
-fn is_ancestor(repo: &Repo, ancestor: &str, descendant: &str) -> bool {
-    // Bypasses git_run/git_capture on purpose (like is_ignored): --is-ancestor
-    // signals via exit code — exit 1 means "not an ancestor", a normal result.
-    Command::new("git")
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .current_dir(repo.cwd())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// True if `a` and `b` share a common ancestor (a merge-base exists). Bounds the
+/// lineage walk: with a common ancestor, `default..branch` is limited to the
+/// divergent commits; unrelated roots would otherwise span all of branch.
+fn share_history(repo: &Repo, a: &str, b: &str) -> bool {
+    git_capture(Some(repo.cwd()), &["merge-base", a, b]).is_ok_and(|s| !s.is_empty())
 }
 
 /// The stack lineage for `branch` as `root → … → branch`, read from a single
-/// first-parent walk bounded to the commits above `default` (so cost is the
-/// stack height, not the repo's history). Intermediate branch tips on that walk
-/// are the stack's lower branches. A chain of length < 3 means "not a stack"
-/// (a branch directly on the trunk yields `[default, branch]`) → no annotation.
+/// first-parent walk of the range `default..branch` (so cost is the stack
+/// height, not the repo's history). Intermediate branch tips on that walk are
+/// the stack's lower branches. A chain of length < 3 means "not a stack" (a
+/// branch directly on the trunk yields `[default, branch]`) → no annotation.
+///
+/// `--boundary` includes the fork commit at the bottom of the range, so a base
+/// branch whose tip has been absorbed into `default` (main drifted/merged past
+/// it) is still named — it wouldn't be with a plain `^default` exclusion.
 ///
 /// `branch`'s own tip is skipped, so an empty branch sitting at its base's
 /// commit yields `[default, branch]` — no lineage until it has a commit of its
@@ -657,25 +656,37 @@ fn is_ancestor(repo: &Repo, ancestor: &str, descendant: &str) -> bool {
 /// Assumes linear stacks (`--first-parent`): an ancestor branch reachable only
 /// through a merge's second parent won't be named — matches the stated scope.
 fn lineage(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>, default: &str) -> Vec<String> {
-    // The guard is load-bearing twice over: correctness (a branch not descended
-    // from the trunk isn't a stack) and cost — without it, a diverged/orphan
-    // branch would rev-list its entire history (`^default` excludes nothing).
-    if branch == default || !is_ancestor(repo, default, branch) {
+    // Guard: the branch must share history with the trunk. This is the cost
+    // bound (without a common ancestor, `default..branch` spans all of branch),
+    // and it admits a branch that has *diverged* from the trunk — a base whose
+    // fork is now behind an advanced main is still a stack, unlike a plain
+    // "is main an ancestor" test which would wrongly reject it.
+    if branch == default || !share_history(repo, default, branch) {
         return vec![branch.to_string()];
     }
     let revs = git_capture(
         Some(repo.cwd()),
-        &["rev-list", "--first-parent", branch, &format!("^{default}")],
+        &["rev-list", "--first-parent", "--boundary", &format!("{default}..{branch}")],
     )
     .unwrap_or_default();
     let mut chain = vec![branch.to_string()];
     // skip(1): the first rev is branch's own tip; ancestors are strictly below.
-    for sha in revs.lines().skip(1) {
-        if let Some(names) = tips.get(sha) {
-            for name in names {
-                if name != branch && name != default && !chain.iter().any(|c| c == name) {
-                    chain.push(name.clone());
-                }
+    for line in revs.lines().skip(1) {
+        // boundary commits (the fork) are prefixed with '-'.
+        let sha = line.strip_prefix('-').unwrap_or(line);
+        let Some(names) = tips.get(sha) else {
+            continue;
+        };
+        // Skip default's own tip commit: branches sitting there — empty branches
+        // off the trunk, or a base that has landed in the trunk — are siblings of
+        // the stack, not ancestors. (This is why the boundary can't be taken at
+        // face value: it's the fork, where such branches cluster.)
+        if names.iter().any(|n| n == default) {
+            continue;
+        }
+        for name in names {
+            if name != branch && !chain.iter().any(|c| c == name) {
+                chain.push(name.clone());
             }
         }
     }
