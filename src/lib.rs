@@ -556,28 +556,24 @@ pub fn list() -> Result<()> {
     let tips = branch_tips(&repo);
     let default = default_branch(&tips);
 
-    // Pass 1: infer each branch-bearing worktree's lineage, and from those derive
-    // the worktree-children map (#37 scenario b) — a base row shows what stacks
-    // on it. A branch's immediate parent is the entry before it in its chain; if
-    // that parent is itself a worktree, this branch is its child. Restricted to
-    // worktree branches, so it's O(worktrees), not branch-count sensitive.
-    let wt_labels: HashSet<&str> =
+    // Pass 1: per branch-bearing worktree, infer its ancestor lineage (for the
+    // `root → … → branch` annotation) and its direct child *branches* (#37
+    // scenario b) — children stacked on it, whether or not they have a worktree,
+    // since a stack is navigated by branch. Both derive from the commit graph.
+    let wt: HashSet<&str> =
         worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
     let mut chains: HashMap<String, Vec<String>> = HashMap::new();
-    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    let mut children: HashMap<String, Children> = HashMap::new();
     for w in worktrees.iter().filter(|w| !w.bare) {
-        let chain = default.map(|d| lineage(&repo, &w.label, &tips, d)).unwrap_or_default();
-        if let Some(parent) = chain.iter().rev().nth(1) {
-            // Record a child only under a non-trunk worktree parent: every branch
-            // is trivially a child of the trunk, which isn't a stack.
-            if Some(parent.as_str()) != default && wt_labels.contains(parent.as_str()) {
-                children.entry(parent.clone()).or_default().push(w.label.clone());
-            }
-        }
+        let chain = default.map(|d| lineage(&repo, &w.label, &tips, d, &wt)).unwrap_or_default();
+        // The trunk isn't a stack base — every branch is trivially its child, so
+        // don't annotate it with children.
+        let kids = match default {
+            Some(d) if d != w.label => direct_children(&repo, &w.label, d, &tips, &wt),
+            _ => Children::None,
+        };
         chains.insert(w.label.clone(), chain);
-    }
-    for kids in children.values_mut() {
-        kids.sort(); // deterministic order (chains iterate in HashMap order)
+        children.insert(w.label.clone(), kids);
     }
 
     // Pass 2: render.
@@ -621,16 +617,19 @@ pub fn list() -> Result<()> {
         // ancestor above the trunk (chain len >= 3) or a child of its own.
         let empty = Vec::new();
         let chain = chains.get(&w.label).unwrap_or(&empty);
-        let kids = children.get(&w.label).unwrap_or(&empty);
-        let stack = if chain.len() >= 3 || !kids.is_empty() {
+        let kids = children.get(&w.label).unwrap_or(&Children::None);
+        let stack = if chain.len() >= 3 || !matches!(kids, Children::None) {
             let mut s = chain.join(" → ");
-            match kids.first() {
-                Some(only) if kids.len() == 1 => {
-                    s.push_str(" → ");
-                    s.push_str(only);
+            match kids {
+                Children::None => {}
+                Children::Immediate(names) if names.len() == 1 => {
+                    if let Some(only) = names.first() {
+                        s.push_str(" → ");
+                        s.push_str(only);
+                    }
                 }
-                Some(_) => s.push_str(&format!(" → [{}]", kids.len())),
-                None => {}
+                Children::Immediate(names) => s.push_str(&format!(" → [{}]", names.len())),
+                Children::Many(n) => s.push_str(&format!(" → [{n}]")),
             }
             format!("  {}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
         } else {
@@ -689,7 +688,13 @@ fn share_history(repo: &Repo, a: &str, b: &str) -> bool {
 ///
 /// Assumes linear stacks (`--first-parent`): an ancestor branch reachable only
 /// through a merge's second parent won't be named — matches the stated scope.
-fn lineage(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>, default: &str) -> Vec<String> {
+fn lineage(
+    repo: &Repo,
+    branch: &str,
+    tips: &HashMap<String, Vec<String>>,
+    default: &str,
+    wt: &HashSet<&str>,
+) -> Vec<String> {
     // Guard: the branch must share history with the trunk. This is the cost
     // bound (without a common ancestor, `default..branch` spans all of branch),
     // and it admits a branch that has *diverged* from the trunk — a base whose
@@ -718,7 +723,11 @@ fn lineage(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>, defau
         if names.iter().any(|n| n == default) {
             continue;
         }
-        for name in names {
+        // Several branches can share this commit (e.g. an empty branch twinning a
+        // real one). They're one stack level: take a single representative,
+        // preferring one with a worktree — the empty twin usually has none.
+        let pick = names.iter().find(|n| wt.contains(n.as_str())).or_else(|| names.first());
+        if let Some(name) = pick {
             if name != branch && !chain.iter().any(|c| c == name) {
                 chain.push(name.clone());
             }
@@ -727,6 +736,66 @@ fn lineage(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>, defau
     chain.push(default.to_string());
     chain.reverse();
     chain
+}
+
+/// The branches stacked directly on a branch (`list`'s child annotation).
+enum Children {
+    None,
+    /// Immediate child branches, filtered and sorted.
+    Immediate(Vec<String>),
+    /// Too many descendants to filter cheaply — just the descendant count.
+    Many(usize),
+}
+
+/// Cap on descendants we'll filter to immediate children. A normal stack base
+/// has a handful; beyond this we skip the per-descendant filter and just report
+/// the count, so a pathological "thousands built on one commit" can't restorm.
+const CHILDREN_FILTER_CAP: usize = 100;
+
+/// Direct child branches of `parent`: branches whose history contains `parent`'s
+/// tip (`git branch --contains`, cheap — git returns only descendants, not all
+/// branches) and whose *immediate* inferred parent is `parent`. Branch-scoped,
+/// not worktree-scoped: a child stacked on `parent` shows even without its own
+/// worktree, since a stack is navigated by branch.
+fn direct_children(
+    repo: &Repo,
+    parent: &str,
+    default: &str,
+    tips: &HashMap<String, Vec<String>>,
+    wt: &HashSet<&str>,
+) -> Children {
+    let desc: Vec<String> = git_capture(
+        Some(repo.cwd()),
+        &["branch", "--contains", parent, "--format=%(refname:short)"],
+    )
+    .map(|s| {
+        s.lines()
+            .filter(|b| *b != parent && *b != default)
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default();
+
+    if desc.is_empty() {
+        return Children::None;
+    }
+    if desc.len() > CHILDREN_FILTER_CAP {
+        return Children::Many(desc.len());
+    }
+    // Immediate children: descendants whose inferred parent is `parent` itself
+    // (not a deeper branch between them).
+    let mut kids: Vec<String> = desc
+        .into_iter()
+        .filter(|x| {
+            lineage(repo, x, tips, default, wt).iter().rev().nth(1).map(String::as_str) == Some(parent)
+        })
+        .collect();
+    kids.sort();
+    if kids.is_empty() {
+        Children::None
+    } else {
+        Children::Immediate(kids)
+    }
 }
 
 /// True if the worktree at `path` has uncommitted changes (tracked edits or
