@@ -634,7 +634,9 @@ pub fn list() -> Result<()> {
                     }
                 }
                 Children::Immediate(names) => s.push_str(&format!(" → [{}]", names.len())),
-                Children::Many(n) => s.push_str(&format!(" → [{n}]")),
+                // `+` distinguishes an unfiltered descendant count (cap hit) from
+                // the exact immediate-fork width above.
+                Children::Many(n) => s.push_str(&format!(" → [{n}+]")),
             }
             format!("  {}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
         } else {
@@ -766,7 +768,8 @@ enum Children {
     None,
     /// Immediate child branches, filtered and sorted.
     Immediate(Vec<String>),
-    /// Too many descendants to filter cheaply — just the descendant count.
+    /// Too many descendants to filter cheaply — the descendant count, rendered
+    /// `[N+]` to mark it as unfiltered (vs `Immediate`'s exact fork width).
     Many(usize),
 }
 
