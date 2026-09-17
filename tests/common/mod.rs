@@ -46,7 +46,10 @@ impl Scratch {
 
     /// Run git in `dir`, asserting success; returns trimmed stdout.
     pub fn git_in(&self, dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
+        let mut cmd = Command::new("git");
+        cmd.args(args).current_dir(dir);
+        self.isolate(&mut cmd);
+        let out = cmd.output().unwrap();
         assert!(
             out.status.success(),
             "git {:?} failed: {}",
@@ -70,12 +73,19 @@ impl Scratch {
 
     /// Run `tonic` in `dir`.
     pub fn tonic_in(&self, dir: &Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_tonic"))
-            .args(args)
-            .current_dir(dir)
-            .env("NO_COLOR", "1")
-            .output()
-            .unwrap()
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_tonic"));
+        cmd.args(args).current_dir(dir).env("NO_COLOR", "1");
+        self.isolate(&mut cmd);
+        cmd.output().unwrap()
+    }
+
+    /// Point HOME / XDG_CONFIG_HOME at the tempdir so neither git's global config
+    /// nor tonic's `~/.config/tonic/config.toml` (which could override
+    /// `worktree_path` and break `wt()`) leaks in — the harness runs identically
+    /// regardless of who runs it. (macOS ignores XDG, so HOME covers it there.)
+    fn isolate(&self, cmd: &mut Command) {
+        cmd.env("HOME", &self.root)
+            .env("XDG_CONFIG_HOME", self.root.join(".config"));
     }
 
     /// A path under the repo's parent dir (where siblings live).
