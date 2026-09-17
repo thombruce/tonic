@@ -86,6 +86,38 @@ fn twin_child_is_not_a_phantom_fork() {
 }
 
 #[test]
+fn configured_default_branch_anchors_lineage() {
+    let s = Scratch::new();
+    // develop advances past main, then a stack is built on it
+    s.tonic(&["add", "develop"]);
+    s.commit_in(&s.wt("develop"), "dc");
+    s.tonic_in(&s.wt("develop"), &["add", "a"]);
+    s.commit_in(&s.wt("a"), "ac");
+    s.tonic_in(&s.wt("a"), &["add", "b"]);
+    s.commit_in(&s.wt("b"), "bc");
+
+    // without config, main is the trunk: develop reads as a stacked branch
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("main → develop → a → b"), "default trunk should be main:\n{out}");
+
+    // with default_branch = develop, lineage anchors at develop instead
+    std::fs::write(s.repo.join("tonic.toml"), "default_branch = \"develop\"\n").unwrap();
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("develop → a → b"), "configured trunk not honored:\n{out}");
+    assert!(!out.contains("main → develop"), "develop should be the root, not a child:\n{out}");
+}
+
+#[test]
+fn stale_default_branch_config_falls_back() {
+    let s = Scratch::new();
+    linear_stack(&s);
+    // a branch that doesn't exist must not point lineage at a phantom ref
+    std::fs::write(s.repo.join("tonic.toml"), "default_branch = \"nope\"\n").unwrap();
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("main → a → b"), "stale config should fall back to main:\n{out}");
+}
+
+#[test]
 fn empty_branch_gains_lineage_after_a_commit() {
     let s = Scratch::new();
     s.tonic(&["add", "foo"]);

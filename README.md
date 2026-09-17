@@ -104,6 +104,12 @@ worktree_path = "{repo}/.worktrees/{branch}"
 # No effect when checking out an existing local or remote branch.
 base = "main"
 
+# The repo's trunk branch. Used as the base for `list` stack lineage and as the
+# preferred main worktree for bare-repo fallbacks. tonic auto-detects "main"
+# then "master"; set this for other conventions (e.g. "develop"). A value that
+# doesn't match an existing branch is ignored (falls back to main/master).
+default_branch = "develop"
+
 # Fetch before resolving a non-local branch, so a branch that's on a remote but
 # not yet fetched is picked up (like passing --fetch every time). Only fetches
 # when the branch isn't already local; non-fatal if offline. Prefer the --fetch
