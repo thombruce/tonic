@@ -43,6 +43,8 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
 tonic list                     # list worktrees (alias: ls; marks current *, dirty, stack lineage + children)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
+tonic up / down                # move one branch up (toward the tip) / down (toward the trunk) the stack
+tonic top / bottom             # jump to the tip / base of the stack
 tonic rm  <branch> [-f] [-d]   # remove a worktree (alias: remove; -f: force, -d: also delete branch)
 tonic shell-init <shell>       # print the shell function for cd integration
 ```
@@ -59,6 +61,25 @@ chain — ` → child` for a single child, ` → [N]` for a fork of N. Derived f
 the commit graph (no stored state); a freshly-created branch with no commits of
 its own shows no lineage yet and gains it once it has a commit. The lineage can
 name a stacked ancestor even when that ancestor has no worktree of its own.
+
+### Stack navigation
+
+`cd` moves **laterally** between worktrees; `up`/`down`/`top`/`bottom` move
+**vertically** along a stack of dependent branches, using the same inferred
+lineage `list` shows (no stored state). A stack is a column: `up`/`top` climb
+toward the tip (a child, newer work), `down`/`bottom` descend toward the trunk
+(the parent).
+
+A step goes to the target branch whichever way applies — if the branch **has a
+worktree**, tonic `cd`s there (needs [shell integration](#shell-integration-optional));
+if it **doesn't**, tonic `git checkout`s it **in place** in the current worktree.
+So a stack can live across many worktrees, in one, or a mix, and navigation just
+works. This is structure and movement only — no rebase or re-parenting; use
+`git rebase` (or `gh stack` / `glab`) to restructure.
+
+A fork (a branch with several children) has no single target: `up`/`top` error
+and name the children so you can `tonic cd`/`tonic add` the one you want. On a
+dirty worktree an in-place checkout is refused by git, as usual.
 
 ### How `tonic add <branch>` resolves the branch
 

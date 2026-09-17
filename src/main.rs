@@ -41,6 +41,14 @@ enum Cmd {
         #[arg(value_parser = ["bash", "zsh", "fish"])]
         shell: String,
     },
+    /// Move one branch up the stack, toward the tip (a child)
+    Up,
+    /// Move one branch down the stack, toward the trunk (the parent)
+    Down,
+    /// Jump to the top of the stack (the tip branch)
+    Top,
+    /// Jump to the bottom of the stack (the branch on the trunk)
+    Bottom,
     /// Remove the worktree checked out for BRANCH
     #[command(visible_alias = "remove")]
     Rm {
@@ -63,6 +71,10 @@ fn main() -> anyhow::Result<()> {
         Cmd::List => tonic::list(),
         Cmd::Cd { branch } => tonic::cd(&branch),
         Cmd::ShellInit { shell } => tonic::shell_init(&shell),
+        Cmd::Up => tonic::up(),
+        Cmd::Down => tonic::down(),
+        Cmd::Top => tonic::top(),
+        Cmd::Bottom => tonic::bottom(),
         Cmd::Rm { branch, force, delete_branch } => tonic::rm(&branch, force, delete_branch),
     }
 }

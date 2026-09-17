@@ -894,6 +894,203 @@ pub fn cd(branch: &str) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Vertical stack navigation (#43)
+// ---------------------------------------------------------------------------
+//
+// Lateral movement (cd between worktrees) plus vertical movement along a stack
+// of dependent branches. The lineage is *inferred* from the commit graph, the
+// same source `list` uses (#37) — no stored state. The novel part is that a step
+// resolves to whichever mechanism applies: if the target branch has a worktree,
+// print its path so the shell wrapper cd's there (lateral); if it doesn't,
+// `git checkout` it in place within the current worktree (vertical). So a stack
+// can span many worktrees, one, or a mix, and navigation just works.
+//
+// Directions (the column metaphor): `up`/`top` climb toward the tip (child,
+// newer work); `down`/`bottom` descend toward the trunk (parent). `top`/`bottom`
+// jump to the ends. No rebase/re-parenting — structure and movement only.
+
+enum Nav {
+    Up,
+    Down,
+    Top,
+    Bottom,
+}
+
+/// A resolved navigation: either a branch to move to, or a no-op with the reason
+/// (already at an end of the stack). A fork with no single target is an error,
+/// not a `Stay` — handled at resolution.
+enum NavStep {
+    Go(String),
+    Stay(&'static str),
+}
+
+pub fn up() -> Result<()> {
+    navigate(&Nav::Up)
+}
+pub fn down() -> Result<()> {
+    navigate(&Nav::Down)
+}
+pub fn top() -> Result<()> {
+    navigate(&Nav::Top)
+}
+pub fn bottom() -> Result<()> {
+    navigate(&Nav::Bottom)
+}
+
+/// The branch checked out in the invoking worktree, or an error if HEAD is
+/// detached (nothing to navigate relative to).
+fn current_branch(repo: &Repo) -> Result<String> {
+    let head = git_capture(Some(repo.cwd()), &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .map_err(|_| anyhow!("HEAD is detached — stack navigation needs a branch checked out"))?;
+    if head.is_empty() {
+        bail!("HEAD is detached — stack navigation needs a branch checked out");
+    }
+    Ok(head)
+}
+
+fn navigate(nav: &Nav) -> Result<()> {
+    let repo = Repo::discover()?;
+    if repo.root.is_none() {
+        bail!("stack navigation must run from inside a worktree");
+    }
+    let cfg = Config::load(&repo)?;
+    let current = current_branch(&repo)?;
+    let tips = branch_tips(&repo);
+    let default = default_branch(&cfg, &tips).ok_or_else(|| {
+        anyhow!("no trunk branch found — stack lineage needs main/master or a configured default_branch")
+    })?;
+    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+    let worktrees = parse_worktrees(&list);
+    let wt: HashSet<&str> =
+        worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
+
+    let step = match nav {
+        Nav::Down => parent_of(&repo, &current, &tips, &default, &wt),
+        Nav::Bottom => base_of(&repo, &current, &tips, &default, &wt),
+        Nav::Up => child_of(&repo, &current, &default, &tips, &wt),
+        Nav::Top => tip_of(&repo, &current, &default, &tips, &wt),
+    }?;
+
+    match step {
+        NavStep::Stay(msg) => {
+            eprintln!("{msg}");
+            Ok(())
+        }
+        NavStep::Go(branch) => goto(&repo, &worktrees, &branch),
+    }
+}
+
+/// One step toward the trunk: the branch immediately below `current` in its
+/// inferred lineage (`root → … → current`).
+fn parent_of(
+    repo: &Repo,
+    current: &str,
+    tips: &HashMap<String, Vec<String>>,
+    default: &str,
+    wt: &HashSet<&str>,
+) -> Result<NavStep> {
+    let chain = lineage(repo, current, tips, default, wt);
+    // chain is root-anchored with `current` last; its predecessor is the parent.
+    match chain.iter().rev().nth(1) {
+        Some(parent) => Ok(NavStep::Go(parent.clone())),
+        None => Ok(NavStep::Stay("already at the bottom of the stack (on the trunk)")),
+    }
+}
+
+/// Jump to the base of the stack: the branch directly on the trunk (`chain[1]`,
+/// the trunk being `chain[0]`).
+fn base_of(
+    repo: &Repo,
+    current: &str,
+    tips: &HashMap<String, Vec<String>>,
+    default: &str,
+    wt: &HashSet<&str>,
+) -> Result<NavStep> {
+    let chain = lineage(repo, current, tips, default, wt);
+    match chain.get(1) {
+        None => Ok(NavStep::Stay("already at the bottom of the stack (on the trunk)")),
+        Some(base) if base == current => Ok(NavStep::Stay("already at the bottom of the stack")),
+        Some(base) => Ok(NavStep::Go(base.clone())),
+    }
+}
+
+/// One step toward the tip: the single branch stacked on `current`. A fork
+/// (several children) has no single target — that's an error, naming them.
+fn child_of(
+    repo: &Repo,
+    current: &str,
+    default: &str,
+    tips: &HashMap<String, Vec<String>>,
+    wt: &HashSet<&str>,
+) -> Result<NavStep> {
+    let mut memo: HashMap<String, Vec<String>> = HashMap::new();
+    match direct_children(repo, current, default, tips, wt, &mut memo) {
+        Children::None => Ok(NavStep::Stay("already at the top of the stack")),
+        Children::Immediate(kids) => match kids.split_first() {
+            Some((only, [])) => Ok(NavStep::Go(only.clone())),
+            _ => bail!(
+                "'{current}' forks into {} — pick one with `tonic cd <branch>` or `tonic add <branch>`",
+                kids.join(", ")
+            ),
+        },
+        Children::Many(n) => bail!(
+            "'{current}' has {n}+ branches stacked on it — pick one with `tonic cd`/`tonic add`"
+        ),
+    }
+}
+
+/// Jump to the tip: climb single children until a leaf (the tip) is reached. A
+/// fork on the way up is ambiguous — error, since there's no one tip.
+fn tip_of(
+    repo: &Repo,
+    current: &str,
+    default: &str,
+    tips: &HashMap<String, Vec<String>>,
+    wt: &HashSet<&str>,
+) -> Result<NavStep> {
+    let mut memo: HashMap<String, Vec<String>> = HashMap::new();
+    let mut cur = current.to_string();
+    // Each step is strictly higher in the commit graph (a child contains its
+    // parent's tip), so the walk terminates — no cycle guard needed.
+    loop {
+        match direct_children(repo, &cur, default, tips, wt, &mut memo) {
+            Children::None => break,
+            Children::Immediate(kids) => match kids.split_first() {
+                Some((only, [])) => cur = only.clone(),
+                _ => bail!(
+                    "stack forks at '{cur}' into {} — navigate with `tonic cd`/`tonic add`",
+                    kids.join(", ")
+                ),
+            },
+            Children::Many(n) => bail!(
+                "'{cur}' has {n}+ branches stacked on it — navigate with `tonic cd`/`tonic add`"
+            ),
+        }
+    }
+    if cur == current {
+        Ok(NavStep::Stay("already at the top of the stack"))
+    } else {
+        Ok(NavStep::Go(cur))
+    }
+}
+
+/// Move to `branch`, cd-or-checkout: if it has a worktree, print its path so the
+/// shell wrapper cd's there (lateral); otherwise `git checkout` it in place in
+/// the current worktree (vertical). git's own refusal handles a dirty tree.
+fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str) -> Result<()> {
+    let check = "✓".if_supports_color(Stream::Stderr, |t| t.green());
+    if let Some(w) = worktrees.iter().find(|w| !w.bare && w.label == branch) {
+        eprintln!("{check} {branch}: switched to its worktree");
+        // stdout path only in the cd case — the wrapper cd's when it's non-empty.
+        println!("{}", w.path.display());
+    } else {
+        git_run(repo.cwd(), &["checkout", branch])?;
+        eprintln!("{check} {branch}: checked out in place");
+    }
+    Ok(())
+}
+
 /// Print a shell function that wraps `tonic` so that `add`/`cd` change the
 /// shell's directory. tonic can't cd its parent shell itself (it's a child
 /// process); the sourced function captures the path tonic prints and cd's.
@@ -918,7 +1115,7 @@ fn shell_wrapper(shell: &str) -> Option<&'static str> {
 // Uses `local`, so this is bash/zsh only — not portable to a pure POSIX sh.
 const BASH_ZSH_WRAPPER: &str = r#"tonic() {
     case "$1" in
-        add|cd|rm|remove)
+        add|cd|rm|remove|up|down|top|bottom)
             # --help prints to stdout at exit 0; don't capture it as a path.
             case " $* " in
                 *" -h "*|*" --help "*) command tonic "$@"; return ;;
@@ -936,7 +1133,7 @@ const BASH_ZSH_WRAPPER: &str = r#"tonic() {
 
 const FISH_WRAPPER: &str = r#"function tonic
     switch $argv[1]
-        case add cd rm remove
+        case add cd rm remove up down top bottom
             # --help prints to stdout at exit 0; don't capture it as a path.
             if contains -- -h $argv; or contains -- --help $argv
                 command tonic $argv
