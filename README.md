@@ -8,6 +8,22 @@ configure where worktrees are created, and runs lifecycle hooks on create and
 remove — so per-worktree dev databases, containers, or build dirs can spin up
 and tear down cleanly.
 
+## Philosophy
+
+tonic is about **moving around your git work locally** — provider-agnostic, no
+rebasing — along two axes:
+
+- **Lateral:** jump between **worktrees** (sibling checkouts) — `add`, `list`,
+  `cd`, `rm`, with shell integration that drops you into the right directory.
+- **Vertical:** navigate **stacked branches** (a series where each builds on the
+  one below) — `list` surfaces the inferred stack lineage, and `up`/`down`/
+  `top`/`bottom` move along it, keeping local and host-agnostic what `gh stack` /
+  `glab stack` do per-provider, without ever rebasing for you.
+
+Both axes are inferred from the commit graph and your worktree layout — no stored
+state, no lock-in. A vertical step even unifies the axes: it `cd`s to the target
+branch's worktree if it has one, or checks it out in place if it doesn't.
+
 ## Installation
 
 ```
