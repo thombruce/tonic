@@ -130,6 +130,40 @@ fn down_on_the_trunk_is_a_noop() {
 }
 
 #[test]
+fn up_into_a_dirty_worktree_is_refused() {
+    let s = Scratch::new();
+    s.tonic(&["add", "foo"]);
+    s.commit_in(&s.wt("foo"), "fc");
+    // bar: stacked on foo, has a commit, no worktree — so up would checkout in place
+    let foo = s.wt("foo");
+    s.git_in(&foo, &["branch", "bar"]);
+    s.git_in(&foo, &["switch", "-q", "bar"]);
+    s.commit_in(&foo, "bc");
+    s.git_in(&foo, &["switch", "-q", "foo"]);
+    // dirty the worktree — an in-place checkout would otherwise carry this across
+    std::fs::write(foo.join("scratch"), "wip").unwrap();
+
+    let out = s.tonic_in(&foo, &["up"]);
+    assert!(!out.status.success(), "in-place checkout should be refused when dirty");
+    assert!(
+        stderr(&out).contains("uncommitted changes"),
+        "expected a dirty-tree error:\n{}",
+        stderr(&out)
+    );
+    assert_eq!(head(&s, &foo), "foo", "HEAD must be unchanged after a refused checkout");
+}
+
+#[test]
+fn detached_head_errors() {
+    let s = Scratch::new();
+    stack_ab(&s);
+    s.git_in(&s.wt("b"), &["switch", "-q", "--detach", "HEAD"]);
+    let out = s.tonic_in(&s.wt("b"), &["down"]);
+    assert!(!out.status.success(), "navigation needs a branch checked out");
+    assert!(stderr(&out).contains("detached"), "expected a detached-HEAD error:\n{}", stderr(&out));
+}
+
+#[test]
 fn up_into_a_fork_errors_naming_the_children() {
     let s = Scratch::new();
     s.tonic(&["add", "a"]);
