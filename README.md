@@ -94,8 +94,11 @@ works. This is structure and movement only — no rebase or re-parenting; use
 `git rebase` (or `gh stack` / `glab`) to restructure.
 
 A fork (a branch with several children) has no single target: `up`/`top` error
-and name the children so you can `tonic cd`/`tonic add` the one you want. On a
-dirty worktree an in-place checkout is refused by git, as usual.
+and name the children so you can `tonic cd`/`tonic add` the one you want. An
+in-place checkout is refused when the worktree has uncommitted changes (commit or
+stash first) — so a vertical step never silently moves your work onto another
+branch. A lateral step (to a branch that has its own worktree) never touches your
+files.
 
 ### How `tonic add <branch>` resolves the branch
 

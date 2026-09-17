@@ -968,8 +968,8 @@ fn navigate(nav: &Nav) -> Result<()> {
     let step = match nav {
         Nav::Down => parent_of(&repo, &current, &tips, &default, &wt),
         Nav::Bottom => base_of(&repo, &current, &tips, &default, &wt),
-        Nav::Up => child_of(&repo, &current, &default, &tips, &wt),
-        Nav::Top => tip_of(&repo, &current, &default, &tips, &wt),
+        Nav::Up => child_of(&repo, &current, &tips, &default, &wt),
+        Nav::Top => tip_of(&repo, &current, &tips, &default, &wt),
     }?;
 
     match step {
@@ -1020,8 +1020,8 @@ fn base_of(
 fn child_of(
     repo: &Repo,
     current: &str,
-    default: &str,
     tips: &HashMap<String, Vec<String>>,
+    default: &str,
     wt: &HashSet<&str>,
 ) -> Result<NavStep> {
     let mut memo: HashMap<String, Vec<String>> = HashMap::new();
@@ -1045,8 +1045,8 @@ fn child_of(
 fn tip_of(
     repo: &Repo,
     current: &str,
-    default: &str,
     tips: &HashMap<String, Vec<String>>,
+    default: &str,
     wt: &HashSet<&str>,
 ) -> Result<NavStep> {
     let mut memo: HashMap<String, Vec<String>> = HashMap::new();
@@ -1085,6 +1085,15 @@ fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str) -> Result<()> {
         // stdout path only in the cd case — the wrapper cd's when it's non-empty.
         println!("{}", w.path.display());
     } else {
+        // In-place checkout, unlike a lateral cd, touches this worktree's files.
+        // `git checkout <branch>` *carries* uncommitted changes across on success
+        // (it only refuses on conflict), which would silently move your work onto
+        // another branch — refuse up front so movement never mutates the tree.
+        if is_dirty(repo.cwd()) {
+            bail!(
+                "worktree has uncommitted changes — commit or stash before checking out '{branch}' in place"
+            );
+        }
         git_run(repo.cwd(), &["checkout", branch])?;
         eprintln!("{check} {branch}: checked out in place");
     }
