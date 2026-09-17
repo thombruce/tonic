@@ -24,6 +24,10 @@ struct Config {
     /// Fetch before resolving a non-local branch, so a branch that exists on a
     /// remote but hasn't been fetched is picked up. Mirrors the `--fetch` flag.
     fetch: Option<bool>,
+    /// The repo's trunk branch, used as the base for `list` stack lineage and as
+    /// the preferred main worktree for bare-repo fallbacks. Tried before the
+    /// built-in `main`/`master` detection; ignored if no such branch exists.
+    default_branch: Option<String>,
     /// Per-pattern mode overrides for entries listed in `.worktreeinclude`.
     include: Option<Vec<Include>>,
     hooks: Option<Vec<Hook>>,
@@ -85,6 +89,9 @@ impl Config {
         }
         if higher.fetch.is_some() {
             self.fetch = higher.fetch;
+        }
+        if higher.default_branch.is_some() {
+            self.default_branch = higher.default_branch;
         }
         if higher.include.is_some() {
             self.include = higher.include;
@@ -187,13 +194,13 @@ impl Repo {
 /// Directory to source `.worktreeinclude` entries from. For a normal repo (or
 /// when invoked inside a worktree) that's the current working tree. For a bare
 /// repo invoked from the bare dir there is no working tree, so fall back to the
-/// main/ then master/ worktree; `None` if neither exists yet.
-fn resolve_source(repo: &Repo) -> Result<Option<PathBuf>> {
+/// configured default / main / master worktree; `None` if none exists yet.
+fn resolve_source(repo: &Repo, cfg: &Config) -> Result<Option<PathBuf>> {
     if let Some(root) = &repo.root {
         return Ok(Some(root.clone()));
     }
     let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
-    for branch in ["main", "master"] {
+    for branch in trunk_candidates(cfg) {
         if let Some(path) = parse_worktree(&list, branch) {
             return Ok(Some(path));
         }
@@ -512,7 +519,7 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
     // stdout so the shell integration can `cd` there instead of leaving the
     // shell stranded in a deleted directory (#29).
     if removing_current {
-        println!("{}", home_checkout(&repo).display());
+        println!("{}", home_checkout(&repo, &cfg).display());
     }
     Ok(())
 }
@@ -520,14 +527,14 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
 /// A worktree to return to after removing the current one: the main working tree
 /// for a normal repo; for a bare repo the `main`/`master` (or any remaining)
 /// worktree, since `repo.main` there is the bare dir, which has no checkout (#35).
-fn home_checkout(repo: &Repo) -> PathBuf {
+fn home_checkout(repo: &Repo, cfg: &Config) -> PathBuf {
     if !repo.bare {
         return repo.main.clone();
     }
     // Run from repo.main (the bare dir, which exists) — the current worktree we
     // just removed may be gone.
     if let Ok(list) = git_capture(Some(&repo.main), &["worktree", "list", "--porcelain"]) {
-        for branch in ["main", "master"] {
+        for branch in trunk_candidates(cfg) {
             if let Some(p) = parse_worktree(&list, branch) {
                 return p;
             }
@@ -554,7 +561,8 @@ pub fn list() -> Result<()> {
     // Branch tips + trunk drive lineage inference (#37); the annotation can name
     // stacked ancestors that have no worktree of their own.
     let tips = branch_tips(&repo);
-    let default = default_branch(&tips);
+    let cfg = Config::load(&repo)?;
+    let default = default_branch(&cfg, &tips);
 
     // Pass 1: per branch-bearing worktree, infer its ancestor lineage (for the
     // `root → … → branch` annotation) and its direct child *branches* (#37
@@ -568,7 +576,7 @@ pub fn list() -> Result<()> {
     let mut memo: HashMap<String, Vec<String>> = HashMap::new();
     let mut children: HashMap<String, Children> = HashMap::new();
     for w in worktrees.iter().filter(|w| !w.bare) {
-        if let Some(d) = default {
+        if let Some(d) = default.as_deref() {
             lineage_cached(&repo, &w.label, &tips, d, &wt, &mut memo);
             // The trunk isn't a stack base — every branch is trivially its child,
             // so don't annotate it with children.
@@ -664,11 +672,29 @@ fn branch_tips(repo: &Repo) -> HashMap<String, Vec<String>> {
     map
 }
 
-/// The repo's trunk among the local branches: `main`, else `master`.
-/// ponytail: hardcoded pair; a configurable default branch is tracked in #46.
-fn default_branch(tips: &HashMap<String, Vec<String>>) -> Option<&'static str> {
+/// Candidate trunk branch names in resolution order: the configured
+/// `default_branch` first (if any), then `main`, then `master`. Shared by every
+/// spot that needs the repo's trunk, so config overrides them consistently.
+fn trunk_candidates(cfg: &Config) -> Vec<&str> {
+    let mut names = Vec::new();
+    if let Some(d) = cfg.default_branch.as_deref() {
+        names.push(d);
+    }
+    for d in ["main", "master"] {
+        if !names.contains(&d) {
+            names.push(d);
+        }
+    }
+    names
+}
+
+/// The repo's trunk among the local branches: the first `trunk_candidates`
+/// entry that actually exists as a branch. A configured branch that doesn't
+/// exist falls through to `main`/`master`, so a stale config never points
+/// lineage at a phantom ref (#46).
+fn default_branch(cfg: &Config, tips: &HashMap<String, Vec<String>>) -> Option<String> {
     let names: Vec<&str> = tips.values().flatten().map(String::as_str).collect();
-    ["main", "master"].into_iter().find(|d| names.contains(d))
+    trunk_candidates(cfg).into_iter().find(|d| names.contains(d)).map(String::from)
 }
 
 /// True if `a` and `b` share a common ancestor (a merge-base exists). Bounds the
@@ -976,7 +1002,7 @@ fn parse_worktree(porcelain: &str, branch: &str) -> Option<PathBuf> {
 }
 
 fn transfer_includes(repo: &Repo, worktree: &Path, cfg: &Config) -> Result<()> {
-    let Some(source) = resolve_source(repo)? else {
+    let Some(source) = resolve_source(repo, cfg)? else {
         return Ok(());
     };
     let list = source.join(".worktreeinclude");
