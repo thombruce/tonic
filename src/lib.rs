@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use owo_colors::{OwoColorize, Stream};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
@@ -556,18 +556,41 @@ pub fn list() -> Result<()> {
     let tips = branch_tips(&repo);
     let default = default_branch(&tips);
 
+    // Pass 1: per branch-bearing worktree, infer its ancestor lineage (for the
+    // `root → … → branch` annotation) and its direct child *branches* (#37
+    // scenario b) — children stacked on it, whether or not they have a worktree,
+    // since a stack is navigated by branch. Both derive from the commit graph.
+    let wt: HashSet<&str> =
+        worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
+    // Memoize each branch's lineage: a descendant is queried once per base above
+    // it, so without this the child scan is O(worktrees²) git spawns (the regression
+    // #47 removed). With it, each branch's chain is computed at most once.
+    let mut memo: HashMap<String, Vec<String>> = HashMap::new();
+    let mut children: HashMap<String, Children> = HashMap::new();
+    for w in worktrees.iter().filter(|w| !w.bare) {
+        if let Some(d) = default {
+            lineage_cached(&repo, &w.label, &tips, d, &wt, &mut memo);
+            // The trunk isn't a stack base — every branch is trivially its child,
+            // so don't annotate it with children.
+            let kids = if d == w.label {
+                Children::None
+            } else {
+                direct_children(&repo, &w.label, d, &tips, &wt, &mut memo)
+            };
+            children.insert(w.label.clone(), kids);
+        }
+    }
+
+    // Pass 2: render.
     for w in &worktrees {
-        let is_bare = w.bare;
         // The bare entry is the anchor, not an actionable worktree: dim it, and
         // it's never "current" (that belongs to an actual checkout).
         let is_current =
-            !is_bare && current.is_some() && std::fs::canonicalize(&w.path).ok() == current;
-        let dirty = !is_bare && is_dirty(&w.path);
-
+            !w.bare && current.is_some() && std::fs::canonicalize(&w.path).ok() == current;
         let label = format!("{:<width$}", w.label);
         let path = w.path.display().to_string();
 
-        if is_bare {
+        if w.bare {
             println!(
                 "  {}  {}",
                 label.if_supports_color(Stream::Stdout, |t| t.dimmed()),
@@ -588,17 +611,34 @@ pub fn list() -> Result<()> {
             label
         };
         let path = format!("{}", path.if_supports_color(Stream::Stdout, |t| t.dimmed()));
-        let dirty = if dirty {
+        let dirty = if is_dirty(&w.path) {
             format!(" {}", "(dirty)".if_supports_color(Stream::Stdout, |t| t.yellow()))
         } else {
             String::new()
         };
-        // Stack lineage: only annotate a genuine stack (branch sits on another
-        // branch, not just the trunk) — a chain of `root → … → branch`, dimmed.
-        let chain = default.map(|d| lineage(&repo, &w.label, &tips, d)).unwrap_or_default();
-        let stack = if chain.len() >= 3 {
-            let s = format!("  {}", chain.join(" → "));
-            format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
+        // Stack annotation, root-anchored: the ancestor chain `root → … → branch`
+        // continued into this branch's children — ` → child` for a single child,
+        // ` → [N]` for a fork. Shown when the branch is in a stack: it has an
+        // ancestor above the trunk (chain len >= 3) or a child of its own.
+        let empty = Vec::new();
+        let chain = memo.get(&w.label).unwrap_or(&empty);
+        let kids = children.get(&w.label).unwrap_or(&Children::None);
+        let stack = if chain.len() >= 3 || !matches!(kids, Children::None) {
+            let mut s = chain.join(" → ");
+            match kids {
+                Children::None => {}
+                Children::Immediate(names) if names.len() == 1 => {
+                    if let Some(only) = names.first() {
+                        s.push_str(" → ");
+                        s.push_str(only);
+                    }
+                }
+                Children::Immediate(names) => s.push_str(&format!(" → [{}]", names.len())),
+                // `+` distinguishes an unfiltered descendant count (cap hit) from
+                // the exact immediate-fork width above.
+                Children::Many(n) => s.push_str(&format!(" → [{n}+]")),
+            }
+            format!("  {}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
         } else {
             String::new()
         };
@@ -655,7 +695,13 @@ fn share_history(repo: &Repo, a: &str, b: &str) -> bool {
 ///
 /// Assumes linear stacks (`--first-parent`): an ancestor branch reachable only
 /// through a merge's second parent won't be named — matches the stated scope.
-fn lineage(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>, default: &str) -> Vec<String> {
+fn lineage(
+    repo: &Repo,
+    branch: &str,
+    tips: &HashMap<String, Vec<String>>,
+    default: &str,
+    wt: &HashSet<&str>,
+) -> Vec<String> {
     // Guard: the branch must share history with the trunk. This is the cost
     // bound (without a common ancestor, `default..branch` spans all of branch),
     // and it admits a branch that has *diverged* from the trunk — a base whose
@@ -684,7 +730,11 @@ fn lineage(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>, defau
         if names.iter().any(|n| n == default) {
             continue;
         }
-        for name in names {
+        // Several branches can share this commit (e.g. an empty branch twinning a
+        // real one). They're one stack level: take a single representative,
+        // preferring one with a worktree — the empty twin usually has none.
+        let pick = names.iter().find(|n| wt.contains(n.as_str())).or_else(|| names.first());
+        if let Some(name) = pick {
             if name != branch && !chain.iter().any(|c| c == name) {
                 chain.push(name.clone());
             }
@@ -693,6 +743,100 @@ fn lineage(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>, defau
     chain.push(default.to_string());
     chain.reverse();
     chain
+}
+
+/// Memoized `lineage`: computed once per branch and reused, since a descendant
+/// is queried once per base above it during the child scans.
+fn lineage_cached(
+    repo: &Repo,
+    branch: &str,
+    tips: &HashMap<String, Vec<String>>,
+    default: &str,
+    wt: &HashSet<&str>,
+    memo: &mut HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    if let Some(chain) = memo.get(branch) {
+        return chain.clone();
+    }
+    let chain = lineage(repo, branch, tips, default, wt);
+    memo.insert(branch.to_string(), chain.clone());
+    chain
+}
+
+/// The branches stacked directly on a branch (`list`'s child annotation).
+enum Children {
+    None,
+    /// Immediate child branches, filtered and sorted.
+    Immediate(Vec<String>),
+    /// Too many descendants to filter cheaply — the descendant count, rendered
+    /// `[N+]` to mark it as unfiltered (vs `Immediate`'s exact fork width).
+    Many(usize),
+}
+
+/// Cap on descendants we'll filter to immediate children. A normal stack base
+/// has a handful; beyond this we skip the per-descendant filter and just report
+/// the count, so a pathological "thousands built on one commit" can't restorm.
+const CHILDREN_FILTER_CAP: usize = 100;
+
+/// Direct child branches of `parent`: branches whose history contains `parent`'s
+/// tip (`git branch --contains` — git returns only descendants, cheap even with
+/// thousands of branches) and whose *immediate* inferred parent is `parent`.
+/// Branch-scoped, not worktree-scoped: a child stacked on `parent` shows even
+/// without its own worktree, since a stack is navigated by branch. The immediate
+/// filter runs a (memoized) lineage per descendant, so it's bounded by
+/// `CHILDREN_FILTER_CAP` for a pathological descendant set.
+fn direct_children(
+    repo: &Repo,
+    parent: &str,
+    default: &str,
+    tips: &HashMap<String, Vec<String>>,
+    wt: &HashSet<&str>,
+    memo: &mut HashMap<String, Vec<String>>,
+) -> Children {
+    let desc: Vec<String> = git_capture(
+        Some(repo.cwd()),
+        &["branch", "--contains", parent, "--format=%(refname:short)"],
+    )
+    .map(|s| {
+        s.lines()
+            .filter(|b| *b != parent && *b != default)
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default();
+
+    if desc.is_empty() {
+        return Children::None;
+    }
+    if desc.len() > CHILDREN_FILTER_CAP {
+        return Children::Many(desc.len());
+    }
+    // Immediate children: descendants whose inferred parent is `parent` itself
+    // (not a deeper branch between them).
+    let mut kids: Vec<String> = desc
+        .into_iter()
+        .filter(|x| {
+            lineage_cached(repo, x, tips, default, wt, memo).iter().rev().nth(1).map(String::as_str)
+                == Some(parent)
+        })
+        .collect();
+    // Dedup twins: several branches can share one commit (an empty branch
+    // twinning a real child); they're one child. Keep one per commit, preferring
+    // a worktree branch — otherwise a twin inflates the fork count (→ [2]).
+    let name_sha: HashMap<&str, &str> = tips
+        .iter()
+        .flat_map(|(sha, names)| names.iter().map(move |n| (n.as_str(), sha.as_str())))
+        .collect();
+    kids.sort_by(|a, b| {
+        (!wt.contains(a.as_str())).cmp(&!wt.contains(b.as_str())).then_with(|| a.cmp(b))
+    });
+    let mut seen: HashSet<&str> = HashSet::new();
+    kids.retain(|k| name_sha.get(k.as_str()).is_none_or(|sha| seen.insert(sha)));
+    if kids.is_empty() {
+        Children::None
+    } else {
+        Children::Immediate(kids)
+    }
 }
 
 /// True if the worktree at `path` has uncommitted changes (tracked edits or

@@ -41,7 +41,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 
 ```
 tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
-tonic list                     # list worktrees (alias: ls; marks current *, dirty, and stack lineage)
+tonic list                     # list worktrees (alias: ls; marks current *, dirty, stack lineage + children)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic rm  <branch> [-f] [-d]   # remove a worktree (alias: remove; -f: force, -d: also delete branch)
 tonic shell-init <shell>       # print the shell function for cd integration
@@ -52,12 +52,13 @@ tonic shell-init <shell>       # print the shell function for cd integration
 hooks. `rm` runs `pre_remove` hooks, removes the worktree, and optionally deletes
 the branch.
 
-Worktrees are **sibling directories**, so `list` stays flat. When a branch is
-stacked on another branch (not just `main`), its row is annotated with the
-inferred lineage — `main → baz → birthday`. This is derived from the commit
-graph (no stored state); a freshly-created branch with no commits of its own
-shows no lineage yet and gains it once it has a commit. The lineage can name a
-stacked ancestor even when that ancestor has no worktree of its own.
+Worktrees are **sibling directories**, so `list` stays flat. When a branch is in
+a stack, its row is annotated with the inferred lineage, root-anchored:
+`main → baz → birthday`. A worktree with children stacked on it continues the
+chain — ` → child` for a single child, ` → [N]` for a fork of N. Derived from
+the commit graph (no stored state); a freshly-created branch with no commits of
+its own shows no lineage yet and gains it once it has a commit. The lineage can
+name a stacked ancestor even when that ancestor has no worktree of its own.
 
 ### How `tonic add <branch>` resolves the branch
 
