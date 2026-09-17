@@ -57,4 +57,8 @@ Releases are cut by pushing a `vX.Y.Z` tag (`.github/workflows/release.yml`): it
 
 ## Testing conventions
 
-Pure logic (`render`, `Config::merge`, `worktree_base`, `parse_worktrees`) has unit tests in `lib.rs`. Code that shells out to git is not unit-tested — verify it by hand against a scratch repo (create a temp git repo, or `git clone --bare` for the bare paths, and run the built binary). When asserting `.worktreeinclude` behavior, note that `git worktree add` checks out *tracked* files itself, so a tracked file's presence in a worktree is not evidence tonic copied it — the guardrail only governs what tonic transfers.
+Two layers (both run by `cargo test`):
+- **Unit tests** in `lib.rs` for pure logic (`render`, `Config::merge`, `worktree_base`, `parse_worktrees`, `stack_order`-style helpers). The `tests` module opts out of the panic-lints.
+- **Integration tests** in `tests/` (`#50`) drive the built binary against real scratch repos built in a tempdir — the `tests/common/mod.rs` `Scratch` helper (`git init`, `commit_in`, `tonic`/`tonic_in`, `wt(branch)` for the sibling worktree path). This is where git-shelling behaviour is tested — lineage/children (`list`), branch resolution (`add`), worktree resolution (`rm`/`cd`). **When you touch a git-shelling path, add or extend an integration test** rather than "verify by hand"; the seeded cases (drift, twin, empty-branch, deep stack, detached `rm`, remote tracking) are the regressions hand-verification missed. Uses `CARGO_BIN_EXE_tonic` (no `assert_cmd` dep) and `NO_COLOR=1` so output is plain.
+
+When asserting `.worktreeinclude` behavior, note that `git worktree add` checks out *tracked* files itself, so a tracked file's presence in a worktree is not evidence tonic copied it — the guardrail only governs what tonic transfers.
