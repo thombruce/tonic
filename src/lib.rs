@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use owo_colors::{OwoColorize, Stream};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::os::fd::AsFd;
@@ -572,57 +572,159 @@ fn home_checkout(repo: &Repo, cfg: &Config) -> PathBuf {
 // list
 // ---------------------------------------------------------------------------
 
-pub fn list(verbose: bool) -> Result<()> {
+/// Output format for `list`. The compact/verbose human view and the two machine
+/// views (`--porcelain`, `--json`) are three renderers over the same
+/// `WorktreeView` model, so the machine forms are lossless while the human form
+/// shortens/decorates (#13, #59).
+pub enum ListFormat {
+    Human,
+    Porcelain,
+    Json,
+}
+
+/// Everything `list` knows about one worktree — the row model. Serialized as-is
+/// for `--json`; the human and porcelain renderers read the same fields, so the
+/// compaction/decoration lives only in the human renderer (nothing lossy leaks
+/// into the machine output).
+#[derive(Serialize)]
+struct WorktreeView {
+    /// The checked-out branch, or `null` for the bare anchor / a detached HEAD.
+    branch: Option<String>,
+    /// Absolute worktree path (the human view shortens it for display).
+    path: String,
+    bare: bool,
+    current: bool,
+    detached: bool,
+    /// Root-anchored lineage `[trunk, …, branch]`, full names; empty when the
+    /// branch isn't rooted on a known trunk.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    lineage: Vec<String>,
+    /// Immediate child branch names (empty if none, or if the descendant set was
+    /// too large to enumerate — see `children_overflow`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<String>,
+    /// Set when the descendant set exceeded the filter cap: the raw count, with
+    /// names left unenumerated (mirrors the human `[N+]`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    children_overflow: Option<usize>,
+    status: Status,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ahead: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    behind: Option<usize>,
+    /// Display label (branch name / "detached" / "bare"); not serialized.
+    #[serde(skip)]
+    label: String,
+    /// The path as a `PathBuf` for `short_path`; not serialized.
+    #[serde(skip)]
+    abs: PathBuf,
+}
+
+pub fn list(format: ListFormat, verbose: bool) -> Result<()> {
     let repo = Repo::discover()?;
+    let cfg = Config::load(&repo)?;
+    let views = collect_views(&repo, &cfg)?;
+    match format {
+        ListFormat::Human => render_human(&views, verbose, &worktree_base(repo.bare, &repo.main)),
+        ListFormat::Porcelain => render_porcelain(&views),
+        ListFormat::Json => {
+            let json = serde_json::to_string_pretty(&views).context("serializing list to JSON")?;
+            println!("{json}");
+        }
+    }
+    Ok(())
+}
+
+/// Build the row model for every worktree: lineage + children (inferred once,
+/// memoized — #37/#47), plus dirty status and ahead/behind. Shared by all three
+/// `list` renderers.
+fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
     let out = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
     let worktrees = parse_worktrees(&out);
-
     // The current worktree is the one whose path is the invoking working tree.
     let current = repo.root.as_deref().and_then(|r| std::fs::canonicalize(r).ok());
-    let width = worktrees.iter().map(|w| w.label.chars().count()).max().unwrap_or(0);
-    // Branch tips + trunk drive lineage inference (#37); the annotation can name
-    // stacked ancestors that have no worktree of their own.
-    let tips = branch_tips(&repo);
-    let cfg = Config::load(&repo)?;
-    let default = default_branch(&cfg, &tips);
+    let tips = branch_tips(repo);
+    let default = default_branch(cfg, &tips);
 
-    // Pass 1: per branch-bearing worktree, infer its ancestor lineage (for the
-    // `root → … → branch` annotation) and its direct child *branches* (#37
-    // scenario b) — children stacked on it, whether or not they have a worktree,
-    // since a stack is navigated by branch. Both derive from the commit graph.
+    // Pass 1: infer each branch-bearing worktree's lineage and direct children
+    // from the commit graph. Memoized so a descendant isn't re-walked per base.
     let wt: HashSet<&str> =
         worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
-    // Memoize each branch's lineage: a descendant is queried once per base above
-    // it, so without this the child scan is O(worktrees²) git spawns (the regression
-    // #47 removed). With it, each branch's chain is computed at most once.
     let mut memo: HashMap<String, Vec<String>> = HashMap::new();
     let mut children: HashMap<String, Children> = HashMap::new();
     for w in worktrees.iter().filter(|w| !w.bare) {
         if let Some(d) = default.as_deref() {
-            lineage_cached(&repo, &w.label, &tips, d, &wt, &mut memo);
-            // The trunk isn't a stack base — every branch is trivially its child,
-            // so don't annotate it with children.
+            lineage_cached(repo, &w.label, &tips, d, &wt, &mut memo);
+            // The trunk isn't a stack base — every branch is trivially its child.
             let kids = if d == w.label {
                 Children::None
             } else {
-                direct_children(&repo, &w.label, d, &tips, &wt, &mut memo)
+                direct_children(repo, &w.label, d, &tips, &wt, &mut memo)
             };
             children.insert(w.label.clone(), kids);
         }
     }
 
-    // Pass 2: render. Paths are shown relative to the base worktrees live in
-    // (#58), so a wide absolute path doesn't crowd the row off the line.
-    let base = worktree_base(repo.bare, &repo.main);
+    // Pass 2: assemble the views.
+    let mut views = Vec::new();
     for w in &worktrees {
-        // The bare entry is the anchor, not an actionable worktree: dim it, and
-        // it's never "current" (that belongs to an actual checkout).
-        let is_current =
+        let current =
             !w.bare && current.is_some() && std::fs::canonicalize(&w.path).ok() == current;
-        let label = format!("{:<width$}", w.label);
-        let path = short_path(&w.path, &base);
+        let detached = w.detached;
+        let branch = (!w.bare && !detached).then(|| w.label.clone());
 
-        if w.bare {
+        // Lineage is exposed once the branch is rooted on a known trunk (len >= 2,
+        // so a plain base branch still reports its parent for machine readers);
+        // the human renderer applies its own "is this a stack" display gate.
+        let empty = Vec::new();
+        let chain = if w.bare { &empty } else { memo.get(&w.label).unwrap_or(&empty) };
+        let lineage = if chain.len() >= 2 { chain.clone() } else { Vec::new() };
+        let (kid_names, overflow) = match children.get(&w.label).unwrap_or(&Children::None) {
+            Children::None => (Vec::new(), None),
+            Children::Immediate(names) => (names.clone(), None),
+            Children::Many(n) => (Vec::new(), Some(*n)),
+        };
+
+        let (status, ahead, behind) = if w.bare {
+            (Status::default(), None, None)
+        } else {
+            let ab = ahead_behind(&w.path);
+            (worktree_status(&w.path), ab.as_ref().map(|a| a.ahead), ab.as_ref().map(|a| a.behind))
+        };
+
+        views.push(WorktreeView {
+            branch,
+            // ponytail: display() is lossy on a non-UTF8 worktree path (→ U+FFFD).
+            // Vanishingly rare on tonic's target platforms; serializing PathBuf
+            // directly avoids it but yields a byte array on some, which is worse.
+            path: w.path.display().to_string(),
+            bare: w.bare,
+            current,
+            detached,
+            lineage,
+            children: kid_names,
+            children_overflow: overflow,
+            status,
+            ahead,
+            behind,
+            label: w.label.clone(),
+            abs: w.path.clone(),
+        });
+    }
+    Ok(views)
+}
+
+/// The default human view: one row per worktree, shortened and decorated (#58/
+/// #30). Paths are relative to `base` so a wide absolute path doesn't crowd the
+/// row; the row's own branch shows as `*` in the lineage (compact only).
+fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
+    let width = views.iter().map(|v| v.label.chars().count()).max().unwrap_or(0);
+    for v in views {
+        let label = format!("{:<width$}", v.label);
+        let path = short_path(&v.abs, base);
+
+        if v.bare {
+            // The bare entry is the anchor, not an actionable worktree: dim it.
             println!(
                 "  {}  {}",
                 label.if_supports_color(Stream::Stdout, |t| t.dimmed()),
@@ -631,63 +733,52 @@ pub fn list(verbose: bool) -> Result<()> {
             continue;
         }
 
-        // Current-worktree marker is `▸` — `*` is reclaimed below as the
-        // self-position marker in the lineage chain (#58).
-        let marker = if is_current {
+        // Current-worktree marker is `▸` — `*` is the self-position marker below.
+        let marker = if v.current {
             format!("{}", "▸".if_supports_color(Stream::Stdout, |t| t.green()))
         } else {
             " ".to_string()
         };
-        let label = if is_current {
+        let label = if v.current {
             let style = owo_colors::Style::new().green().bold();
             format!("{}", label.if_supports_color(Stream::Stdout, |t| t.style(style)))
         } else {
             label
         };
         let path = format!("{}", path.if_supports_color(Stream::Stdout, |t| t.dimmed()));
-        // Stack annotation, root-anchored: the ancestor chain `root → … → branch`
-        // continued into this branch's children — ` → child` for a single child,
-        // ` → [N]` for a fork. Shown when the branch is in a stack: it has an
-        // ancestor above the trunk (chain len >= 3) or a child of its own.
-        let empty = Vec::new();
-        let chain = memo.get(&w.label).unwrap_or(&empty);
-        let kids = children.get(&w.label).unwrap_or(&Children::None);
-        let stack = if chain.len() >= 3 || !matches!(kids, Children::None) {
-            // Compact: replace this row's own branch (the chain's last element)
-            // with `*` — a footnote back-ref to the label on this line, so the
-            // name isn't printed twice (#58). Verbose keeps the full names so the
-            // "full picture" mode is lossless (#59).
-            let mut parts: Vec<&str> = chain.iter().map(String::as_str).collect();
+
+        // Stack annotation: shown when the branch is actually in a stack — it has
+        // an ancestor above the trunk (chain len >= 3) or a child of its own.
+        let has_children = !v.children.is_empty() || v.children_overflow.is_some();
+        let stack = if v.lineage.len() >= 3 || has_children {
+            // Compact: replace the row's own branch (chain's last element) with
+            // `*`, a back-ref to the label on this line (#58). Verbose keeps full
+            // names, for a lossless "full picture".
+            let mut parts: Vec<&str> = v.lineage.iter().map(String::as_str).collect();
             if !verbose {
                 if let Some(last) = parts.last_mut() {
                     *last = "*";
                 }
             }
             let mut s = parts.join(" → ");
-            match kids {
-                Children::None => {}
-                Children::Immediate(names) if names.len() == 1 => {
-                    if let Some(only) = names.first() {
-                        s.push_str(" → ");
-                        s.push_str(only);
-                    }
-                }
-                Children::Immediate(names) => s.push_str(&format!(" → [{}]", names.len())),
-                // `+` distinguishes an unfiltered descendant count (cap hit) from
-                // the exact immediate-fork width above.
-                Children::Many(n) => s.push_str(&format!(" → [{n}+]")),
+            if let Some(n) = v.children_overflow {
+                // `+` marks an unfiltered descendant count (cap hit).
+                s.push_str(&format!(" → [{n}+]"));
+            } else if let [only] = v.children.as_slice() {
+                s.push_str(" → ");
+                s.push_str(only);
+            } else if v.children.len() > 1 {
+                s.push_str(&format!(" → [{}]", v.children.len()));
             }
             format!("  {}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
         } else {
             String::new()
         };
-        // Trailing status: dirty count (yellow) + ahead/behind (cyan), each
-        // shown only when it applies (#30). Distinct colors — ahead/behind isn't
-        // dirtiness.
-        let st = worktree_status(&w.path);
-        let ab = ahead_behind(&w.path);
-        let dirty = format_dirty(&st, verbose);
-        let upstream = format_upstream(ab.as_ref());
+
+        // Trailing status: dirty count (yellow) + ahead/behind (cyan) — distinct
+        // colors, since ahead/behind isn't dirtiness (#30).
+        let dirty = format_dirty(&v.status, verbose);
+        let upstream = format_upstream(v.ahead, v.behind);
         let mut seg: Vec<String> = Vec::new();
         if !dirty.is_empty() {
             seg.push(format!("{}", dirty.if_supports_color(Stream::Stdout, |t| t.yellow())));
@@ -698,7 +789,49 @@ pub fn list(verbose: bool) -> Result<()> {
         let status = if seg.is_empty() { String::new() } else { format!("  {}", seg.join(" ")) };
         println!("{marker} {label}  {path}{stack}{status}");
     }
-    Ok(())
+}
+
+/// Machine-readable records, one per worktree, git-`--porcelain`-style: blank-line
+/// separated, `key value` lines, presence flags. Unknown keys can be added later
+/// without breaking positional parsers. Lossless — full names, absolute paths.
+fn render_porcelain(views: &[WorktreeView]) {
+    for (i, v) in views.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("worktree {}", v.path);
+        if let Some(branch) = &v.branch {
+            println!("branch {branch}");
+        }
+        if v.bare {
+            println!("bare");
+        }
+        if v.detached {
+            println!("detached");
+        }
+        if v.current {
+            println!("current");
+        }
+        if !v.lineage.is_empty() {
+            println!("lineage {}", v.lineage.join(" "));
+        }
+        if !v.children.is_empty() {
+            println!("children {}", v.children.join(" "));
+        }
+        if let Some(n) = v.children_overflow {
+            println!("children-overflow {n}");
+        }
+        println!(
+            "status files={} staged={} unstaged={} untracked={}",
+            v.status.files, v.status.staged, v.status.unstaged, v.status.untracked
+        );
+        if let Some(a) = v.ahead {
+            println!("ahead {a}");
+        }
+        if let Some(b) = v.behind {
+            println!("behind {b}");
+        }
+    }
 }
 
 /// Map of commit sha → local branch name(s) whose tip is that commit. One
@@ -930,7 +1063,7 @@ fn is_dirty(path: &Path) -> bool {
 /// `XY` status does: `X` = index (staged), `Y` = worktree (unstaged), `??` =
 /// untracked. Drives the `list` dirty indicator — compact `!N` (the total) or
 /// verbose `+staged *unstaged ?untracked` (#30).
-#[derive(Default)]
+#[derive(Default, Serialize)]
 struct Status {
     /// Distinct changed files — one per porcelain line, so a file that is both
     /// staged and unstaged (`MM`) counts once. This is the compact `!N`.
@@ -1013,14 +1146,16 @@ fn format_dirty(st: &Status, verbose: bool) -> String {
 /// The ahead/behind portion of a row's status: `↑A ↓B`, each shown only when
 /// non-zero. Empty when up-to-date or upstream-less. Rendered separately (not in
 /// the dirty color, since ahead/behind isn't dirtiness).
-fn format_upstream(ab: Option<&AheadBehind>) -> String {
+fn format_upstream(ahead: Option<usize>, behind: Option<usize>) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(ab) = ab {
-        if ab.ahead > 0 {
-            parts.push(format!("↑{}", ab.ahead));
+    if let Some(a) = ahead {
+        if a > 0 {
+            parts.push(format!("↑{a}"));
         }
-        if ab.behind > 0 {
-            parts.push(format!("↓{}", ab.behind));
+    }
+    if let Some(b) = behind {
+        if b > 0 {
+            parts.push(format!("↓{b}"));
         }
     }
     parts.join(" ")
@@ -1304,11 +1439,15 @@ end
 
 struct Worktree {
     path: PathBuf,
-    /// Branch name, or "detached". Display label; use `bare` to test the anchor.
+    /// Branch name, or "detached". Display label; use `bare`/`detached` to test
+    /// the anchor / a detached HEAD (a branch may legitimately be named either).
     label: String,
     /// True only for the bare-repo anchor entry (the standalone `bare` line),
     /// not for a branch that happens to be named "bare".
     bare: bool,
+    /// True only for a detached HEAD (the standalone `detached` line), not for a
+    /// branch literally named "detached".
+    detached: bool,
 }
 
 /// Parse `git worktree list --porcelain`. Each block is a `worktree <path>`
@@ -1318,6 +1457,7 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
     let mut path: Option<PathBuf> = None;
     let mut label = String::from("detached");
     let mut bare = false;
+    let mut detached = false;
     for line in porcelain.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
             if let Some(prev) = path.take() {
@@ -1325,6 +1465,7 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
                     path: prev,
                     label: std::mem::replace(&mut label, "detached".into()),
                     bare: std::mem::take(&mut bare),
+                    detached: std::mem::take(&mut detached),
                 });
             }
             path = Some(PathBuf::from(p));
@@ -1336,11 +1477,14 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
             bare = true;
             label = "bare".to_string();
         } else if line == "detached" {
+            // Standalone `detached` line = a detached HEAD; distinct from a branch
+            // named "detached" (which arrives as `branch refs/heads/detached`).
+            detached = true;
             label = "detached".to_string();
         }
     }
     if let Some(p) = path {
-        out.push(Worktree { path: p, label, bare });
+        out.push(Worktree { path: p, label, bare, detached });
     }
     out
 }
