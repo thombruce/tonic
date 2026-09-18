@@ -112,6 +112,26 @@ fn verbose_splits_status_and_shows_full_lineage_names() {
 }
 
 #[test]
+fn a_staged_and_modified_file_counts_once_compact_but_splits_verbose() {
+    let s = Scratch::new();
+    s.tonic(&["add", "foo"]);
+    let foo = s.wt("foo");
+    s.commit_in(&foo, "f"); // track f
+    // stage an edit, then edit again → porcelain "MM" (one file, both columns)
+    std::fs::write(foo.join("f"), "v1").unwrap();
+    s.git_in(&foo, &["add", "f"]);
+    std::fs::write(foo.join("f"), "v2").unwrap();
+
+    // compact counts the file once, not twice
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("!1"), "MM file should count once in compact:\n{out}");
+    assert!(!out.contains("!2"), "MM file must not be double-counted:\n{out}");
+    // verbose still shows it in both staged and unstaged
+    let vout = stdout(&s.tonic(&["list", "-v"]));
+    assert!(vout.contains("+1") && vout.contains("*1"), "verbose should split MM:\n{vout}");
+}
+
+#[test]
 fn ahead_behind_shown_against_upstream() {
     let s = Scratch::new();
     let origin = s.root_join("origin.git");

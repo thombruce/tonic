@@ -681,16 +681,21 @@ pub fn list(verbose: bool) -> Result<()> {
         } else {
             String::new()
         };
-        // Trailing status: dirty count + ahead/behind, each shown only when
-        // non-zero (#30). Yellow like the old `(dirty)`; empty when clean.
+        // Trailing status: dirty count (yellow) + ahead/behind (cyan), each
+        // shown only when it applies (#30). Distinct colors — ahead/behind isn't
+        // dirtiness.
         let st = worktree_status(&w.path);
         let ab = ahead_behind(&w.path);
-        let status = format_status(&st, ab.as_ref(), verbose);
-        let status = if status.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", status.if_supports_color(Stream::Stdout, |t| t.yellow()))
-        };
+        let dirty = format_dirty(&st, verbose);
+        let upstream = format_upstream(ab.as_ref());
+        let mut seg: Vec<String> = Vec::new();
+        if !dirty.is_empty() {
+            seg.push(format!("{}", dirty.if_supports_color(Stream::Stdout, |t| t.yellow())));
+        }
+        if !upstream.is_empty() {
+            seg.push(format!("{}", upstream.if_supports_color(Stream::Stdout, |t| t.cyan())));
+        }
+        let status = if seg.is_empty() { String::new() } else { format!("  {}", seg.join(" ")) };
         println!("{marker} {label}  {path}{stack}{status}");
     }
     Ok(())
@@ -927,16 +932,12 @@ fn is_dirty(path: &Path) -> bool {
 /// verbose `+staged *unstaged ?untracked` (#30).
 #[derive(Default)]
 struct Status {
+    /// Distinct changed files — one per porcelain line, so a file that is both
+    /// staged and unstaged (`MM`) counts once. This is the compact `!N`.
+    files: usize,
     staged: usize,
     unstaged: usize,
     untracked: usize,
-}
-
-impl Status {
-    /// Total changed entries — the compact `!N` count.
-    fn total(&self) -> usize {
-        self.staged.saturating_add(self.unstaged).saturating_add(self.untracked)
-    }
 }
 
 /// Parse `git status --porcelain` into staged/unstaged/untracked counts. Bypasses
@@ -950,6 +951,7 @@ fn worktree_status(path: &Path) -> Status {
         return st;
     };
     for line in String::from_utf8_lossy(&out.stdout).lines() {
+        st.files = st.files.saturating_add(1);
         let mut chars = line.chars();
         let x = chars.next().unwrap_or(' ');
         let y = chars.next().unwrap_or(' ');
@@ -985,13 +987,12 @@ fn ahead_behind(path: &Path) -> Option<AheadBehind> {
     Some(AheadBehind { ahead, behind })
 }
 
-/// The trailing status block for a `list` row: dirty count(s) plus ahead/behind
-/// arrows, each shown only when non-zero. Compact by default (`!N ↑A ↓B`),
-/// verbose splits the dirty count (`+S *U ?T ↑A ↓B`). Empty when clean and
-/// up-to-date.
-fn format_status(st: &Status, ab: Option<&AheadBehind>, verbose: bool) -> String {
-    let mut parts: Vec<String> = Vec::new();
+/// The dirty portion of a row's status: compact `!N` (changed file count) or,
+/// verbose, the split `+staged *unstaged ?untracked`. Empty when clean. Rendered
+/// yellow. Kept separate from the upstream part so the two carry distinct colors.
+fn format_dirty(st: &Status, verbose: bool) -> String {
     if verbose {
+        let mut parts: Vec<String> = Vec::new();
         if st.staged > 0 {
             parts.push(format!("+{}", st.staged));
         }
@@ -1001,9 +1002,19 @@ fn format_status(st: &Status, ab: Option<&AheadBehind>, verbose: bool) -> String
         if st.untracked > 0 {
             parts.push(format!("?{}", st.untracked));
         }
-    } else if st.total() > 0 {
-        parts.push(format!("!{}", st.total()));
+        parts.join(" ")
+    } else if st.files > 0 {
+        format!("!{}", st.files)
+    } else {
+        String::new()
     }
+}
+
+/// The ahead/behind portion of a row's status: `↑A ↓B`, each shown only when
+/// non-zero. Empty when up-to-date or upstream-less. Rendered separately (not in
+/// the dirty color, since ahead/behind isn't dirtiness).
+fn format_upstream(ab: Option<&AheadBehind>) -> String {
+    let mut parts: Vec<String> = Vec::new();
     if let Some(ab) = ab {
         if ab.ahead > 0 {
             parts.push(format!("↑{}", ab.ahead));

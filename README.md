@@ -85,9 +85,10 @@ its own. The current worktree is marked `▸`.
 Each row ends with a compact status, shown only when it applies, following the
 usual git-prompt conventions:
 
-- `!N` — N uncommitted changes (staged + unstaged + untracked).
-- `↑N` / `↓N` — commits ahead of / behind the branch's upstream (omitted when
-  there's no upstream).
+- `!N` — N changed files (a file with both staged and unstaged edits counts
+  once); shown in yellow.
+- `↑N` / `↓N` — commits ahead of / behind the branch's upstream, in cyan
+  (omitted when there's no upstream).
 
 `tonic list -v` (`--verbose`) expands both: the dirty count splits into
 `+staged *unstaged ?untracked`, and the lineage prints full branch names instead
