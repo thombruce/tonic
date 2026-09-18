@@ -90,6 +90,66 @@ fn twin_child_is_not_a_phantom_fork() {
 }
 
 #[test]
+fn dirty_count_replaces_the_dirty_word() {
+    let s = Scratch::new();
+    s.tonic(&["add", "foo"]);
+    std::fs::write(s.wt("foo").join("wip"), "x").unwrap(); // 1 untracked
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("!1"), "expected a compact dirty count:\n{out}");
+    assert!(!out.contains("(dirty)"), "the (dirty) word should be gone:\n{out}");
+}
+
+#[test]
+fn verbose_splits_status_and_shows_full_lineage_names() {
+    let s = Scratch::new();
+    linear_stack(&s); // main → a → b
+    std::fs::write(s.wt("b").join("wip"), "x").unwrap(); // 1 untracked on b
+    let out = stdout(&s.tonic(&["list", "-v"]));
+    // verbose splits the count and keeps full branch names (no `*` self-marker)
+    assert!(out.contains("?1"), "verbose should split out untracked:\n{out}");
+    assert!(out.contains("main → a → b"), "verbose should show full lineage names:\n{out}");
+    assert!(!out.contains("→ *"), "verbose should not use the `*` self-marker:\n{out}");
+}
+
+#[test]
+fn a_staged_and_modified_file_counts_once_compact_but_splits_verbose() {
+    let s = Scratch::new();
+    s.tonic(&["add", "foo"]);
+    let foo = s.wt("foo");
+    s.commit_in(&foo, "f"); // track f
+    // stage an edit, then edit again → porcelain "MM" (one file, both columns)
+    std::fs::write(foo.join("f"), "v1").unwrap();
+    s.git_in(&foo, &["add", "f"]);
+    std::fs::write(foo.join("f"), "v2").unwrap();
+
+    // compact counts the file once, not twice
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("!1"), "MM file should count once in compact:\n{out}");
+    assert!(!out.contains("!2"), "MM file must not be double-counted:\n{out}");
+    // verbose still shows it in both staged and unstaged
+    let vout = stdout(&s.tonic(&["list", "-v"]));
+    assert!(vout.contains("+1") && vout.contains("*1"), "verbose should split MM:\n{vout}");
+}
+
+#[test]
+fn ahead_behind_shown_against_upstream() {
+    let s = Scratch::new();
+    let origin = s.root_join("origin.git");
+    s.git(&["clone", "--bare", "-q", ".", origin.to_str().unwrap()]);
+    s.git(&["remote", "add", "origin", origin.to_str().unwrap()]);
+    s.git(&["branch", "feat"]);
+    s.git(&["push", "-q", "origin", "feat"]);
+    s.tonic(&["add", "feat"]);
+    // feat tracks origin/feat; put it two commits ahead
+    let feat = s.wt("feat");
+    s.git_in(&feat, &["branch", "--set-upstream-to=origin/feat"]);
+    s.commit_in(&feat, "f1");
+    s.commit_in(&feat, "f2");
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("↑2"), "expected an ahead count:\n{out}");
+}
+
+#[test]
 fn paths_are_relative_and_current_is_marked() {
     let s = Scratch::new();
     s.tonic(&["add", "a"]);
