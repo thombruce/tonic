@@ -57,7 +57,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 
 ```
 tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
-tonic list                     # list worktrees (alias: ls; marks current *, dirty, stack lineage + children)
+tonic list                     # list worktrees (alias: ls; marks current ▸, dirty, stack lineage + children)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic up / down                # move one branch up (toward the tip) / down (toward the trunk) the stack
 tonic top / bottom             # jump to the tip / base of the stack
@@ -70,13 +70,17 @@ tonic shell-init <shell>       # print the shell function for cd integration
 hooks. `rm` runs `pre_remove` hooks, removes the worktree, and optionally deletes
 the branch.
 
-Worktrees are **sibling directories**, so `list` stays flat. When a branch is in
-a stack, its row is annotated with the inferred lineage, root-anchored:
-`main → baz → birthday`. A worktree with children stacked on it continues the
-chain — ` → child` for a single child, ` → [N]` for a fork of N. Derived from
-the commit graph (no stored state); a freshly-created branch with no commits of
-its own shows no lineage yet and gains it once it has a commit. The lineage can
-name a stacked ancestor even when that ancestor has no worktree of its own.
+Worktrees are **sibling directories**, so `list` stays flat, and paths are shown
+relative to the directory they live in (not as long absolute paths). When a
+branch is in a stack, its row is annotated with the inferred lineage,
+root-anchored, with the row's **own branch shown as `*`** (a footnote back-ref to
+its label, so the name isn't repeated) — e.g. `main → baz → *` on `birthday`'s
+row, or `main → * → birthday` on `baz`'s. A worktree with children stacked on it
+continues the chain — ` → child` for a single child, ` → [N]` for a fork of N.
+Derived from the commit graph (no stored state); a freshly-created branch with no
+commits of its own shows no lineage yet and gains it once it has a commit. The
+lineage can name a stacked ancestor even when that ancestor has no worktree of
+its own. The current worktree is marked `▸`.
 
 ### Stack navigation
 
