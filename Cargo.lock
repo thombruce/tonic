@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "git-tonic"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
