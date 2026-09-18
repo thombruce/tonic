@@ -670,7 +670,7 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
     for w in &worktrees {
         let current =
             !w.bare && current.is_some() && std::fs::canonicalize(&w.path).ok() == current;
-        let detached = !w.bare && w.label == "detached";
+        let detached = w.detached;
         let branch = (!w.bare && !detached).then(|| w.label.clone());
 
         // Lineage is exposed once the branch is rooted on a known trunk (len >= 2,
@@ -694,6 +694,9 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
 
         views.push(WorktreeView {
             branch,
+            // ponytail: display() is lossy on a non-UTF8 worktree path (→ U+FFFD).
+            // Vanishingly rare on tonic's target platforms; serializing PathBuf
+            // directly avoids it but yields a byte array on some, which is worse.
             path: w.path.display().to_string(),
             bare: w.bare,
             current,
@@ -1145,11 +1148,15 @@ fn format_dirty(st: &Status, verbose: bool) -> String {
 /// the dirty color, since ahead/behind isn't dirtiness).
 fn format_upstream(ahead: Option<usize>, behind: Option<usize>) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if ahead.is_some_and(|a| a > 0) {
-        parts.push(format!("↑{}", ahead.unwrap_or(0)));
+    if let Some(a) = ahead {
+        if a > 0 {
+            parts.push(format!("↑{a}"));
+        }
     }
-    if behind.is_some_and(|b| b > 0) {
-        parts.push(format!("↓{}", behind.unwrap_or(0)));
+    if let Some(b) = behind {
+        if b > 0 {
+            parts.push(format!("↓{b}"));
+        }
     }
     parts.join(" ")
 }
@@ -1432,11 +1439,15 @@ end
 
 struct Worktree {
     path: PathBuf,
-    /// Branch name, or "detached". Display label; use `bare` to test the anchor.
+    /// Branch name, or "detached". Display label; use `bare`/`detached` to test
+    /// the anchor / a detached HEAD (a branch may legitimately be named either).
     label: String,
     /// True only for the bare-repo anchor entry (the standalone `bare` line),
     /// not for a branch that happens to be named "bare".
     bare: bool,
+    /// True only for a detached HEAD (the standalone `detached` line), not for a
+    /// branch literally named "detached".
+    detached: bool,
 }
 
 /// Parse `git worktree list --porcelain`. Each block is a `worktree <path>`
@@ -1446,6 +1457,7 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
     let mut path: Option<PathBuf> = None;
     let mut label = String::from("detached");
     let mut bare = false;
+    let mut detached = false;
     for line in porcelain.lines() {
         if let Some(p) = line.strip_prefix("worktree ") {
             if let Some(prev) = path.take() {
@@ -1453,6 +1465,7 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
                     path: prev,
                     label: std::mem::replace(&mut label, "detached".into()),
                     bare: std::mem::take(&mut bare),
+                    detached: std::mem::take(&mut detached),
                 });
             }
             path = Some(PathBuf::from(p));
@@ -1464,11 +1477,14 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
             bare = true;
             label = "bare".to_string();
         } else if line == "detached" {
+            // Standalone `detached` line = a detached HEAD; distinct from a branch
+            // named "detached" (which arrives as `branch refs/heads/detached`).
+            detached = true;
             label = "detached".to_string();
         }
     }
     if let Some(p) = path {
-        out.push(Worktree { path: p, label, bare });
+        out.push(Worktree { path: p, label, bare, detached });
     }
     out
 }

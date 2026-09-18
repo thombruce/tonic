@@ -178,6 +178,18 @@ fn json_is_lossless_and_undecorated() {
 }
 
 #[test]
+fn a_branch_named_detached_is_not_misread() {
+    let s = Scratch::new();
+    s.tonic(&["add", "detached"]); // a branch literally named "detached"
+    let out = stdout(&s.tonic(&["list", "--porcelain"]));
+    assert!(out.contains("branch detached"), "named branch should be recorded:\n{out}");
+    assert!(
+        !out.lines().any(|l| l == "detached"),
+        "a branch named 'detached' must not be flagged as a detached HEAD:\n{out}"
+    );
+}
+
+#[test]
 fn porcelain_and_json_conflict() {
     let s = Scratch::new();
     let out = s.tonic(&["list", "--porcelain", "--json"]);
