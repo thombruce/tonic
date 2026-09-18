@@ -26,7 +26,10 @@ fn deep_stack_shows_full_lineage() {
     let s = Scratch::new();
     linear_stack(&s);
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("main → a → b"), "expected full lineage, got:\n{out}");
+    // each row shows its own branch as `*` (a footnote back-ref to its label):
+    // b's row is `main → a → *`, a's row is `main → * → b`.
+    assert!(out.contains("main → a → *"), "expected b's full lineage, got:\n{out}");
+    assert!(out.contains("main → * → b"), "expected a's lineage with child, got:\n{out}");
 }
 
 #[test]
@@ -50,7 +53,7 @@ fn lineage_survives_main_drifting_past_the_base() {
     s.git(&["merge", "--ff-only", "A"]);
     s.commit_in(&s.repo, "m2");
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("main → A → B"), "drift regression: lineage lost:\n{out}");
+    assert!(out.contains("main → A → *"), "drift regression: lineage lost:\n{out}");
 }
 
 #[test]
@@ -65,7 +68,8 @@ fn child_without_a_worktree_is_shown() {
     s.commit_in(&foo, "bc");
     s.git_in(&foo, &["switch", "-q", "foo"]);
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("foo → bar"), "non-worktree child not shown:\n{out}");
+    // foo's row: `main → * → bar` — bar (no worktree) still shown as foo's child.
+    assert!(out.contains("* → bar"), "non-worktree child not shown:\n{out}");
 }
 
 #[test]
@@ -81,8 +85,24 @@ fn twin_child_is_not_a_phantom_fork() {
     // an empty branch twinning bar at bar's commit
     s.git_in(&foo, &["branch", "bartwin", "bar"]);
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("foo → bar"), "expected single child:\n{out}");
+    assert!(out.contains("* → bar"), "expected single child:\n{out}");
     assert!(!out.contains("[2]"), "twin inflated the fork count:\n{out}");
+}
+
+#[test]
+fn paths_are_relative_and_current_is_marked() {
+    let s = Scratch::new();
+    s.tonic(&["add", "a"]);
+    let out = stdout(&s.tonic(&["list"]));
+    // current worktree carries the `▸` marker (no longer `*`, which now marks
+    // self-position in the chain).
+    assert!(out.contains('▸'), "current worktree not marked:\n{out}");
+    // paths are shown relative to the base, not as absolute paths.
+    assert!(out.contains("repo-a"), "worktree dir name missing:\n{out}");
+    assert!(
+        !out.contains(&*s.repo.to_string_lossy()),
+        "path should be relative, not the absolute worktree path:\n{out}"
+    );
 }
 
 #[test]
@@ -98,12 +118,12 @@ fn configured_default_branch_anchors_lineage() {
 
     // without config, main is the trunk: develop reads as a stacked branch
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("main → develop → a → b"), "default trunk should be main:\n{out}");
+    assert!(out.contains("main → develop → a → *"), "default trunk should be main:\n{out}");
 
     // with default_branch = develop, lineage anchors at develop instead
     std::fs::write(s.repo.join("tonic.toml"), "default_branch = \"develop\"\n").unwrap();
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("develop → a → b"), "configured trunk not honored:\n{out}");
+    assert!(out.contains("develop → a → *"), "configured trunk not honored:\n{out}");
     assert!(!out.contains("main → develop"), "develop should be the root, not a child:\n{out}");
 }
 
@@ -114,7 +134,7 @@ fn stale_default_branch_config_falls_back() {
     // a branch that doesn't exist must not point lineage at a phantom ref
     std::fs::write(s.repo.join("tonic.toml"), "default_branch = \"nope\"\n").unwrap();
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("main → a → b"), "stale config should fall back to main:\n{out}");
+    assert!(out.contains("main → a → *"), "stale config should fall back to main:\n{out}");
 }
 
 #[test]
@@ -129,5 +149,6 @@ fn empty_branch_gains_lineage_after_a_commit() {
 
     s.commit_in(&s.wt("empty"), "ec");
     let after = stdout(&s.tonic(&["list"]));
-    assert!(after.contains("foo → empty"), "lineage should appear after a commit:\n{after}");
+    // empty's row now shows `main → foo → *`.
+    assert!(after.contains("main → foo → *"), "lineage should appear after a commit:\n{after}");
 }

@@ -310,6 +310,28 @@ fn worktree_base(bare: bool, main: &Path) -> PathBuf {
     }
 }
 
+/// A worktree path shortened for display: relative to `base` (the dir siblings
+/// live in) when it's under there — usually just the worktree's own dir name —
+/// else home-collapsed to `~/…`, else the full path. Keeps `list` narrow (#58).
+fn short_path(path: &Path, base: &Path) -> String {
+    if let Ok(rel) = path.strip_prefix(base) {
+        if rel.as_os_str().is_empty() {
+            // path == base (e.g. the bare anchor): show its own name, not "".
+            return path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+        }
+        return rel.display().to_string();
+    }
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rel) = path.strip_prefix(&home) {
+            return format!("~/{}", rel.display());
+        }
+    }
+    path.display().to_string()
+}
+
 /// The path where `add` places (and `rm`/`cd` look for) the worktree for
 /// `branch`: the `worktree_path` template rendered and resolved against
 /// `worktree_base`. `/` in the branch name is flattened to `-` so the worktree
@@ -589,14 +611,16 @@ pub fn list() -> Result<()> {
         }
     }
 
-    // Pass 2: render.
+    // Pass 2: render. Paths are shown relative to the base worktrees live in
+    // (#58), so a wide absolute path doesn't crowd the row off the line.
+    let base = worktree_base(repo.bare, &repo.main);
     for w in &worktrees {
         // The bare entry is the anchor, not an actionable worktree: dim it, and
         // it's never "current" (that belongs to an actual checkout).
         let is_current =
             !w.bare && current.is_some() && std::fs::canonicalize(&w.path).ok() == current;
         let label = format!("{:<width$}", w.label);
-        let path = w.path.display().to_string();
+        let path = short_path(&w.path, &base);
 
         if w.bare {
             println!(
@@ -607,8 +631,10 @@ pub fn list() -> Result<()> {
             continue;
         }
 
+        // Current-worktree marker is `▸` — `*` is reclaimed below as the
+        // self-position marker in the lineage chain (#58).
         let marker = if is_current {
-            format!("{}", "*".if_supports_color(Stream::Stdout, |t| t.green()))
+            format!("{}", "▸".if_supports_color(Stream::Stdout, |t| t.green()))
         } else {
             " ".to_string()
         };
@@ -632,7 +658,14 @@ pub fn list() -> Result<()> {
         let chain = memo.get(&w.label).unwrap_or(&empty);
         let kids = children.get(&w.label).unwrap_or(&Children::None);
         let stack = if chain.len() >= 3 || !matches!(kids, Children::None) {
-            let mut s = chain.join(" → ");
+            // Replace this row's own branch (the chain's last element) with `*` —
+            // a footnote back-reference to the label on this line, so the name
+            // isn't printed twice (#58). Echoes git's `*` for the current branch.
+            let mut parts: Vec<&str> = chain.iter().map(String::as_str).collect();
+            if let Some(last) = parts.last_mut() {
+                *last = "*";
+            }
+            let mut s = parts.join(" → ");
             match kids {
                 Children::None => {}
                 Children::Immediate(names) if names.len() == 1 => {
