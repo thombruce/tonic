@@ -90,6 +90,46 @@ fn twin_child_is_not_a_phantom_fork() {
 }
 
 #[test]
+fn dirty_count_replaces_the_dirty_word() {
+    let s = Scratch::new();
+    s.tonic(&["add", "foo"]);
+    std::fs::write(s.wt("foo").join("wip"), "x").unwrap(); // 1 untracked
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("!1"), "expected a compact dirty count:\n{out}");
+    assert!(!out.contains("(dirty)"), "the (dirty) word should be gone:\n{out}");
+}
+
+#[test]
+fn verbose_splits_status_and_shows_full_lineage_names() {
+    let s = Scratch::new();
+    linear_stack(&s); // main → a → b
+    std::fs::write(s.wt("b").join("wip"), "x").unwrap(); // 1 untracked on b
+    let out = stdout(&s.tonic(&["list", "-v"]));
+    // verbose splits the count and keeps full branch names (no `*` self-marker)
+    assert!(out.contains("?1"), "verbose should split out untracked:\n{out}");
+    assert!(out.contains("main → a → b"), "verbose should show full lineage names:\n{out}");
+    assert!(!out.contains("→ *"), "verbose should not use the `*` self-marker:\n{out}");
+}
+
+#[test]
+fn ahead_behind_shown_against_upstream() {
+    let s = Scratch::new();
+    let origin = s.root_join("origin.git");
+    s.git(&["clone", "--bare", "-q", ".", origin.to_str().unwrap()]);
+    s.git(&["remote", "add", "origin", origin.to_str().unwrap()]);
+    s.git(&["branch", "feat"]);
+    s.git(&["push", "-q", "origin", "feat"]);
+    s.tonic(&["add", "feat"]);
+    // feat tracks origin/feat; put it two commits ahead
+    let feat = s.wt("feat");
+    s.git_in(&feat, &["branch", "--set-upstream-to=origin/feat"]);
+    s.commit_in(&feat, "f1");
+    s.commit_in(&feat, "f2");
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("↑2"), "expected an ahead count:\n{out}");
+}
+
+#[test]
 fn paths_are_relative_and_current_is_marked() {
     let s = Scratch::new();
     s.tonic(&["add", "a"]);

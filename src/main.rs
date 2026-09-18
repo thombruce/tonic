@@ -29,7 +29,12 @@ enum Cmd {
     },
     /// List all worktrees
     #[command(visible_alias = "ls")]
-    List,
+    List {
+        /// Show the full status breakdown (staged/unstaged/untracked) and full
+        /// branch names in lineage, instead of the compact form
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Print the path of the worktree for BRANCH (used by shell integration)
     Cd {
         /// Branch whose worktree path to print
@@ -68,7 +73,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Add { branch, new_branch, base, remote, fetch } => {
             tonic::add(&branch, new_branch, base.as_deref(), remote.as_deref(), fetch)
         }
-        Cmd::List => tonic::list(),
+        Cmd::List { verbose } => tonic::list(verbose),
         Cmd::Cd { branch } => tonic::cd(&branch),
         Cmd::ShellInit { shell } => tonic::shell_init(&shell),
         Cmd::Up => tonic::up(),

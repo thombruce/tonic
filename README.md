@@ -57,7 +57,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 
 ```
 tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
-tonic list                     # list worktrees (alias: ls; marks current ▸, dirty, stack lineage + children)
+tonic list [-v]                # list worktrees (alias: ls; marks current ▸, status, stack lineage; -v: full breakdown)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic up / down                # move one branch up (toward the tip) / down (toward the trunk) the stack
 tonic top / bottom             # jump to the tip / base of the stack
@@ -81,6 +81,17 @@ Derived from the commit graph (no stored state); a freshly-created branch with n
 commits of its own shows no lineage yet and gains it once it has a commit. The
 lineage can name a stacked ancestor even when that ancestor has no worktree of
 its own. The current worktree is marked `▸`.
+
+Each row ends with a compact status, shown only when it applies, following the
+usual git-prompt conventions:
+
+- `!N` — N uncommitted changes (staged + unstaged + untracked).
+- `↑N` / `↓N` — commits ahead of / behind the branch's upstream (omitted when
+  there's no upstream).
+
+`tonic list -v` (`--verbose`) expands both: the dirty count splits into
+`+staged *unstaged ?untracked`, and the lineage prints full branch names instead
+of the `*` self-marker — the lossless "full picture".
 
 ### Stack navigation
 

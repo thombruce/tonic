@@ -572,7 +572,7 @@ fn home_checkout(repo: &Repo, cfg: &Config) -> PathBuf {
 // list
 // ---------------------------------------------------------------------------
 
-pub fn list() -> Result<()> {
+pub fn list(verbose: bool) -> Result<()> {
     let repo = Repo::discover()?;
     let out = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
     let worktrees = parse_worktrees(&out);
@@ -645,11 +645,6 @@ pub fn list() -> Result<()> {
             label
         };
         let path = format!("{}", path.if_supports_color(Stream::Stdout, |t| t.dimmed()));
-        let dirty = if is_dirty(&w.path) {
-            format!(" {}", "(dirty)".if_supports_color(Stream::Stdout, |t| t.yellow()))
-        } else {
-            String::new()
-        };
         // Stack annotation, root-anchored: the ancestor chain `root → … → branch`
         // continued into this branch's children — ` → child` for a single child,
         // ` → [N]` for a fork. Shown when the branch is in a stack: it has an
@@ -658,12 +653,15 @@ pub fn list() -> Result<()> {
         let chain = memo.get(&w.label).unwrap_or(&empty);
         let kids = children.get(&w.label).unwrap_or(&Children::None);
         let stack = if chain.len() >= 3 || !matches!(kids, Children::None) {
-            // Replace this row's own branch (the chain's last element) with `*` —
-            // a footnote back-reference to the label on this line, so the name
-            // isn't printed twice (#58). Echoes git's `*` for the current branch.
+            // Compact: replace this row's own branch (the chain's last element)
+            // with `*` — a footnote back-ref to the label on this line, so the
+            // name isn't printed twice (#58). Verbose keeps the full names so the
+            // "full picture" mode is lossless (#59).
             let mut parts: Vec<&str> = chain.iter().map(String::as_str).collect();
-            if let Some(last) = parts.last_mut() {
-                *last = "*";
+            if !verbose {
+                if let Some(last) = parts.last_mut() {
+                    *last = "*";
+                }
             }
             let mut s = parts.join(" → ");
             match kids {
@@ -683,7 +681,17 @@ pub fn list() -> Result<()> {
         } else {
             String::new()
         };
-        println!("{marker} {label}  {path}{dirty}{stack}");
+        // Trailing status: dirty count + ahead/behind, each shown only when
+        // non-zero (#30). Yellow like the old `(dirty)`; empty when clean.
+        let st = worktree_status(&w.path);
+        let ab = ahead_behind(&w.path);
+        let status = format_status(&st, ab.as_ref(), verbose);
+        let status = if status.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", status.if_supports_color(Stream::Stdout, |t| t.yellow()))
+        };
+        println!("{marker} {label}  {path}{stack}{status}");
     }
     Ok(())
 }
@@ -911,6 +919,100 @@ fn is_dirty(path: &Path) -> bool {
         .ok()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false)
+}
+
+/// Working-tree change counts for a worktree, split the way git's porcelain
+/// `XY` status does: `X` = index (staged), `Y` = worktree (unstaged), `??` =
+/// untracked. Drives the `list` dirty indicator — compact `!N` (the total) or
+/// verbose `+staged *unstaged ?untracked` (#30).
+#[derive(Default)]
+struct Status {
+    staged: usize,
+    unstaged: usize,
+    untracked: usize,
+}
+
+impl Status {
+    /// Total changed entries — the compact `!N` count.
+    fn total(&self) -> usize {
+        self.staged.saturating_add(self.unstaged).saturating_add(self.untracked)
+    }
+}
+
+/// Parse `git status --porcelain` into staged/unstaged/untracked counts. Bypasses
+/// git_capture (like is_dirty) since a nonzero exit is tolerable and we want the
+/// raw lines. A malformed/empty read yields an all-zero (clean) Status.
+fn worktree_status(path: &Path) -> Status {
+    let mut st = Status::default();
+    let Some(out) =
+        Command::new("git").args(["status", "--porcelain"]).current_dir(path).output().ok()
+    else {
+        return st;
+    };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut chars = line.chars();
+        let x = chars.next().unwrap_or(' ');
+        let y = chars.next().unwrap_or(' ');
+        if x == '?' && y == '?' {
+            st.untracked = st.untracked.saturating_add(1);
+        } else {
+            if x != ' ' {
+                st.staged = st.staged.saturating_add(1);
+            }
+            if y != ' ' {
+                st.unstaged = st.unstaged.saturating_add(1);
+            }
+        }
+    }
+    st
+}
+
+/// Commits `HEAD` is ahead of / behind its upstream, or `None` when there's no
+/// upstream (a `@{u}`-less branch, or detached HEAD — `rev-list` errors there).
+struct AheadBehind {
+    ahead: usize,
+    behind: usize,
+}
+
+fn ahead_behind(path: &Path) -> Option<AheadBehind> {
+    // `--left-right --count @{u}...HEAD` prints "<behind>\t<ahead>": left is
+    // reachable from the upstream only (behind), right from HEAD only (ahead).
+    let out = git_capture(Some(path), &["rev-list", "--left-right", "--count", "@{u}...HEAD"])
+        .ok()?;
+    let mut it = out.split_whitespace();
+    let behind = it.next()?.parse().ok()?;
+    let ahead = it.next()?.parse().ok()?;
+    Some(AheadBehind { ahead, behind })
+}
+
+/// The trailing status block for a `list` row: dirty count(s) plus ahead/behind
+/// arrows, each shown only when non-zero. Compact by default (`!N ↑A ↓B`),
+/// verbose splits the dirty count (`+S *U ?T ↑A ↓B`). Empty when clean and
+/// up-to-date.
+fn format_status(st: &Status, ab: Option<&AheadBehind>, verbose: bool) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if verbose {
+        if st.staged > 0 {
+            parts.push(format!("+{}", st.staged));
+        }
+        if st.unstaged > 0 {
+            parts.push(format!("*{}", st.unstaged));
+        }
+        if st.untracked > 0 {
+            parts.push(format!("?{}", st.untracked));
+        }
+    } else if st.total() > 0 {
+        parts.push(format!("!{}", st.total()));
+    }
+    if let Some(ab) = ab {
+        if ab.ahead > 0 {
+            parts.push(format!("↑{}", ab.ahead));
+        }
+        if ab.behind > 0 {
+            parts.push(format!("↓{}", ab.behind));
+        }
+    }
+    parts.join(" ")
 }
 
 // ---------------------------------------------------------------------------
