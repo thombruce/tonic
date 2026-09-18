@@ -150,6 +150,41 @@ fn ahead_behind_shown_against_upstream() {
 }
 
 #[test]
+fn porcelain_is_lossless_and_undecorated() {
+    let s = Scratch::new();
+    linear_stack(&s); // main → a → b
+    std::fs::write(s.wt("b").join("wip"), "x").unwrap();
+    let out = stdout(&s.tonic(&["list", "--porcelain"]));
+    // full names, no `*` self-marker or `→` arrows (those are human decoration)
+    assert!(out.contains("branch b"), "missing branch record:\n{out}");
+    assert!(out.contains("lineage main a b"), "lineage should be full names:\n{out}");
+    assert!(out.contains("children b"), "a's children not recorded:\n{out}");
+    assert!(out.contains("status files=1 staged=0 unstaged=0 untracked=1"), "status wrong:\n{out}");
+    assert!(!out.contains('→') && !out.contains('*'), "machine output must not be decorated:\n{out}");
+}
+
+#[test]
+fn json_is_lossless_and_undecorated() {
+    let s = Scratch::new();
+    linear_stack(&s);
+    std::fs::write(s.wt("b").join("wip"), "x").unwrap();
+    let out = stdout(&s.tonic(&["list", "--json"]));
+    assert!(out.contains("\"branch\": \"b\""), "missing branch:\n{out}");
+    assert!(out.contains("\"lineage\""), "missing lineage:\n{out}");
+    // full names present, decoration absent
+    assert!(out.contains("\"main\"") && out.contains("\"a\"") && out.contains("\"b\""), "names missing:\n{out}");
+    assert!(out.contains("\"untracked\": 1"), "status not serialized:\n{out}");
+    assert!(!out.contains('→') && !out.contains('*'), "machine output must not be decorated:\n{out}");
+}
+
+#[test]
+fn porcelain_and_json_conflict() {
+    let s = Scratch::new();
+    let out = s.tonic(&["list", "--porcelain", "--json"]);
+    assert!(!out.status.success(), "the two machine formats should be mutually exclusive");
+}
+
+#[test]
 fn paths_are_relative_and_current_is_marked() {
     let s = Scratch::new();
     s.tonic(&["add", "a"]);

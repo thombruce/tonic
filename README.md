@@ -57,7 +57,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 
 ```
 tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
-tonic list [-v]                # list worktrees (alias: ls; marks current ▸, status, stack lineage; -v: full breakdown)
+tonic list [-v|--porcelain|--json]  # list worktrees (alias: ls; -v: full breakdown; --porcelain/--json: machine-readable)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic up / down                # move one branch up (toward the tip) / down (toward the trunk) the stack
 tonic top / bottom             # jump to the tip / base of the stack
@@ -93,6 +93,27 @@ usual git-prompt conventions:
 `tonic list -v` (`--verbose`) expands both: the dirty count splits into
 `+staged *unstaged ?untracked`, and the lineage prints full branch names instead
 of the `*` self-marker — the lossless "full picture".
+
+For scripts and agents, `tonic list --json` emits an array of worktree objects
+and `--porcelain` emits git-style `key value` records (blank-line separated, one
+block per worktree). Both are **lossless** — full branch names, absolute paths,
+and structured `lineage` / `children` / `status` / `ahead` / `behind` fields —
+so none of the compact human decoration (`*`, `▸`, relative paths) leaks in.
+
+```console
+$ tonic list --porcelain
+worktree /home/you/dev/app-b
+branch b
+lineage main a b
+status files=1 staged=0 unstaged=0 untracked=1
+ahead 2
+```
+
+Porcelain keys: `worktree`, `branch`, presence flags `bare`/`detached`/`current`,
+`lineage` (space-separated, trunk→branch), `children` (immediate child branches),
+`children-overflow N` (when a fork is too large to enumerate), `status
+files=…`, `ahead N`, `behind N`. Keys are omitted when empty; new keys may be
+added over time, so parse by key, not position.
 
 ### Stack navigation
 

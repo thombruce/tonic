@@ -34,6 +34,12 @@ enum Cmd {
         /// branch names in lineage, instead of the compact form
         #[arg(short, long)]
         verbose: bool,
+        /// Machine-readable records (key/value lines, one block per worktree)
+        #[arg(long, conflicts_with_all = ["json", "verbose"])]
+        porcelain: bool,
+        /// Machine-readable JSON array of worktrees
+        #[arg(long, conflicts_with_all = ["porcelain", "verbose"])]
+        json: bool,
     },
     /// Print the path of the worktree for BRANCH (used by shell integration)
     Cd {
@@ -73,7 +79,16 @@ fn main() -> anyhow::Result<()> {
         Cmd::Add { branch, new_branch, base, remote, fetch } => {
             tonic::add(&branch, new_branch, base.as_deref(), remote.as_deref(), fetch)
         }
-        Cmd::List { verbose } => tonic::list(verbose),
+        Cmd::List { verbose, porcelain, json } => {
+            let format = if porcelain {
+                tonic::ListFormat::Porcelain
+            } else if json {
+                tonic::ListFormat::Json
+            } else {
+                tonic::ListFormat::Human
+            };
+            tonic::list(format, verbose)
+        }
         Cmd::Cd { branch } => tonic::cd(&branch),
         Cmd::ShellInit { shell } => tonic::shell_init(&shell),
         Cmd::Up => tonic::up(),
