@@ -90,17 +90,17 @@ tracked separately — see #21.)
 hooks. `rm` runs `pre_remove` hooks, removes the worktree, and optionally deletes
 the branch.
 
-Worktrees are **sibling directories**, so `list` stays flat, and paths are shown
-relative to the directory they live in (not as long absolute paths). When a
-branch is in a stack, its row is annotated with the inferred lineage,
-root-anchored, with the row's **own branch shown as `*`** (a footnote back-ref to
-its label, so the name isn't repeated) — e.g. `main → baz → *` on `birthday`'s
-row, or `main → * → birthday` on `baz`'s. A worktree with children stacked on it
-continues the chain — ` → child` for a single child, ` → [N]` for a fork of N.
-Derived from the commit graph (no stored state); a freshly-created branch with no
-commits of its own shows no lineage yet and gains it once it has a commit. The
-lineage can name a stacked ancestor even when that ancestor has no worktree of
-its own. The current worktree is marked `▸`.
+Worktrees are **sibling directories**, so `list` stays flat. Each row leads with
+the **worktree directory** (relative to where they live, not a long absolute
+path), then its branch shown inside its inferred lineage. The row's own branch is
+named and flagged with `*`; when it's stacked, its ancestors precede it — e.g.
+`▸ app-b   main → a → *b` for a branch on top of `a` on top of `main`. A branch
+sitting directly on the trunk shows bare (`*foo`); children stacked on it
+continue the chain — ` → child` for a single child, ` → [N]` for a fork of N,
+even when that child has no worktree of its own. Lineage is derived from the
+commit graph (no stored state); a freshly-created branch with no commits of its
+own shows just `*branch` until it has a commit. The current worktree is marked
+`▸`.
 
 Each row ends with a compact status, shown only when it applies, following the
 usual git-prompt conventions:
@@ -110,9 +110,9 @@ usual git-prompt conventions:
 - `↑N` / `↓N` — commits ahead of / behind the branch's upstream, in cyan
   (omitted when there's no upstream).
 
-`tonic list -v` (`--verbose`) expands both: the dirty count splits into
-`+staged *unstaged ?untracked`, and the lineage prints full branch names instead
-of the `*` self-marker — the lossless "full picture".
+`tonic list -v` (`--verbose`) expands the dirty count into
+`+staged *unstaged ?untracked`. (The lineage is the same — the `*` flags a branch
+whose name is already shown, so nothing is hidden to begin with.)
 
 For scripts and agents, `tonic list --json` emits an array of worktree objects
 and `--porcelain` emits git-style `key value` records (blank-line separated, one

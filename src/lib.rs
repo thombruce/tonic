@@ -612,10 +612,7 @@ struct WorktreeView {
     ahead: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     behind: Option<usize>,
-    /// Display label (branch name / "detached" / "bare"); not serialized.
-    #[serde(skip)]
-    label: String,
-    /// The path as a `PathBuf` for `short_path`; not serialized.
+    /// The path as a `PathBuf` for `short_path` (human view); not serialized.
     #[serde(skip)]
     abs: PathBuf,
 }
@@ -707,87 +704,101 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
             status,
             ahead,
             behind,
-            label: w.label.clone(),
             abs: w.path.clone(),
         });
     }
     Ok(views)
 }
 
-/// The default human view: one row per worktree, shortened and decorated (#58/
-/// #30). Paths are relative to `base` so a wide absolute path doesn't crowd the
-/// row; the row's own branch shows as `*` in the lineage (compact only).
+/// The default human view (#71): one row per worktree, worktree **dir first**
+/// (the aligned left column, relative to `base`), then the branch folded into its
+/// own lineage — named and flagged with `*`, not a separate column. The current
+/// worktree is marked `▸`. Verbose only expands the trailing status; the lineage
+/// is identical, since `*` now flags a shown name rather than replacing one.
 fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
-    let width = views.iter().map(|v| v.label.chars().count()).max().unwrap_or(0);
-    for v in views {
-        let label = format!("{:<width$}", v.label);
-        let path = short_path(&v.abs, base);
+    let dirs: Vec<String> = views.iter().map(|v| short_path(&v.abs, base)).collect();
+    let width = dirs.iter().map(|d| d.chars().count()).max().unwrap_or(0);
+    for (v, dir) in views.iter().zip(&dirs) {
+        let dir_pad = format!("{dir:<width$}");
 
         if v.bare {
             // The bare entry is the anchor, not an actionable worktree: dim it.
             println!(
                 "  {}  {}",
-                label.if_supports_color(Stream::Stdout, |t| t.dimmed()),
-                path.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+                dir_pad.if_supports_color(Stream::Stdout, |t| t.dimmed()),
+                "(bare)".if_supports_color(Stream::Stdout, |t| t.dimmed()),
             );
             continue;
         }
 
-        // Current-worktree marker is `▸` — `*` is the self-position marker below.
         let marker = if v.current {
             format!("{}", "▸".if_supports_color(Stream::Stdout, |t| t.green()))
         } else {
             " ".to_string()
         };
-        let label = if v.current {
+        // Dir leads, so it carries the current-worktree emphasis (green + bold).
+        let dir_col = if v.current {
             let style = owo_colors::Style::new().green().bold();
-            format!("{}", label.if_supports_color(Stream::Stdout, |t| t.style(style)))
+            format!("{}", dir_pad.if_supports_color(Stream::Stdout, |t| t.style(style)))
         } else {
-            label
-        };
-        let path = format!("{}", path.if_supports_color(Stream::Stdout, |t| t.dimmed()));
-
-        // Stack annotation: shown when the branch is actually in a stack — it has
-        // an ancestor above the trunk (chain len >= 3) or a child of its own.
-        let has_children = !v.children.is_empty() || v.children_overflow.is_some();
-        let stack = if v.lineage.len() >= 3 || has_children {
-            // Compact: replace the row's own branch (chain's last element) with
-            // `*`, a back-ref to the label on this line (#58). Verbose keeps full
-            // names, for a lossless "full picture".
-            let mut parts: Vec<&str> = v.lineage.iter().map(String::as_str).collect();
-            if !verbose {
-                if let Some(last) = parts.last_mut() {
-                    *last = "*";
-                }
-            }
-            let mut s = parts.join(" → ");
-            if let Some(n) = v.children_overflow {
-                // `+` marks an unfiltered descendant count (cap hit).
-                s.push_str(&format!(" → [{n}+]"));
-            } else if let [only] = v.children.as_slice() {
-                s.push_str(" → ");
-                s.push_str(only);
-            } else if v.children.len() > 1 {
-                s.push_str(&format!(" → [{}]", v.children.len()));
-            }
-            format!("  {}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()))
-        } else {
-            String::new()
+            dir_pad
         };
 
-        // Trailing status: dirty count (yellow) + ahead/behind (cyan) — distinct
-        // colors, since ahead/behind isn't dirtiness (#30).
-        let dirty = format_dirty(&v.status, verbose);
-        let upstream = format_upstream(v.ahead, v.behind);
-        let mut seg: Vec<String> = Vec::new();
-        if !dirty.is_empty() {
-            seg.push(format!("{}", dirty.if_supports_color(Stream::Stdout, |t| t.yellow())));
+        let cell = lineage_cell(v);
+        let status = status_cell(v, verbose);
+        println!("{marker} {dir_col}  {cell}{status}");
+    }
+}
+
+/// The lineage cell for a row: the branch named and flagged with `*` (green +
+/// bold), preceded by its ancestors only when it's actually stacked (an ancestor
+/// above the trunk, i.e. `lineage` len >= 3 — a branch directly on the trunk
+/// shows bare), and followed by its children (`→ child` / `→ [N]`). A detached
+/// HEAD has no branch, so it reads `(detached)`.
+fn lineage_cell(v: &WorktreeView) -> String {
+    let Some(name) = &v.branch else {
+        return format!("{}", "(detached)".if_supports_color(Stream::Stdout, |t| t.dimmed()));
+    };
+    let dim = |s: String| format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()));
+    let mut cell = String::new();
+    // Ancestors above the trunk (drop the trunk itself for a bare base branch).
+    if v.lineage.len() >= 3 {
+        if let Some((_branch, ancestors)) = v.lineage.split_last() {
+            for anc in ancestors {
+                cell.push_str(&dim(format!("{anc} → ")));
+            }
         }
-        if !upstream.is_empty() {
-            seg.push(format!("{}", upstream.if_supports_color(Stream::Stdout, |t| t.cyan())));
-        }
-        let status = if seg.is_empty() { String::new() } else { format!("  {}", seg.join(" ")) };
-        println!("{marker} {label}  {path}{stack}{status}");
+    }
+    cell.push_str(&format!("{}", "*".if_supports_color(Stream::Stdout, |t| t.green())));
+    cell.push_str(&format!("{}", name.if_supports_color(Stream::Stdout, |t| t.bold())));
+    if let Some(n) = v.children_overflow {
+        // `+` marks an unfiltered descendant count (cap hit).
+        cell.push_str(&dim(format!(" → [{n}+]")));
+    } else if let [only] = v.children.as_slice() {
+        cell.push_str(&dim(format!(" → {only}")));
+    } else if v.children.len() > 1 {
+        cell.push_str(&dim(format!(" → [{}]", v.children.len())));
+    }
+    cell
+}
+
+/// The trailing status for a row: dirty count (yellow) + ahead/behind (cyan) —
+/// distinct colors, since ahead/behind isn't dirtiness (#30). Empty when clean
+/// and up-to-date; leading spaces only when non-empty.
+fn status_cell(v: &WorktreeView, verbose: bool) -> String {
+    let dirty = format_dirty(&v.status, verbose);
+    let upstream = format_upstream(v.ahead, v.behind);
+    let mut seg: Vec<String> = Vec::new();
+    if !dirty.is_empty() {
+        seg.push(format!("{}", dirty.if_supports_color(Stream::Stdout, |t| t.yellow())));
+    }
+    if !upstream.is_empty() {
+        seg.push(format!("{}", upstream.if_supports_color(Stream::Stdout, |t| t.cyan())));
+    }
+    if seg.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", seg.join(" "))
     }
 }
 
