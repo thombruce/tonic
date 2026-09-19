@@ -33,6 +33,16 @@ fn deep_stack_shows_full_lineage() {
 }
 
 #[test]
+fn detached_worktree_reads_as_detached() {
+    let s = Scratch::new();
+    s.tonic(&["add", "foo"]);
+    // detach the worktree's HEAD — it has no branch, so the row can't name one
+    s.git_in(&s.wt("foo"), &["switch", "-q", "--detach", "HEAD"]);
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(out.contains("(detached)"), "detached worktree not marked:\n{out}");
+}
+
+#[test]
 fn plain_branch_off_main_has_no_lineage() {
     let s = Scratch::new();
     s.tonic(&["add", "solo"]);

@@ -750,8 +750,8 @@ fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
     }
 }
 
-/// The lineage cell for a row: the branch named and flagged with `*` (green +
-/// bold), preceded by its ancestors only when it's actually stacked (an ancestor
+/// The lineage cell for a row: the branch name (bold) flagged with a green `*`,
+/// preceded by its ancestors only when it's actually stacked (an ancestor
 /// above the trunk, i.e. `lineage` len >= 3 — a branch directly on the trunk
 /// shows bare), and followed by its children (`→ child` / `→ [N]`). A detached
 /// HEAD has no branch, so it reads `(detached)`.
