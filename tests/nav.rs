@@ -129,28 +129,48 @@ fn down_on_the_trunk_is_a_noop() {
     assert!(stderr(&out).contains("trunk"), "expected an on-the-trunk message:\n{}", stderr(&out));
 }
 
-#[test]
-fn up_into_a_dirty_worktree_is_refused() {
-    let s = Scratch::new();
+/// foo with a childless branch `bar` stacked on it (no worktree), so `up` from
+/// foo would check `bar` out in place. Returns foo's worktree path.
+fn foo_with_in_place_child(s: &Scratch) -> std::path::PathBuf {
     s.tonic(&["add", "foo"]);
     s.commit_in(&s.wt("foo"), "fc");
-    // bar: stacked on foo, has a commit, no worktree — so up would checkout in place
-    let foo = s.wt("foo");
-    s.git_in(&foo, &["branch", "bar"]);
-    s.git_in(&foo, &["switch", "-q", "bar"]);
-    s.commit_in(&foo, "bc");
-    s.git_in(&foo, &["switch", "-q", "foo"]);
-    // dirty the worktree — an in-place checkout would otherwise carry this across
-    std::fs::write(foo.join("scratch"), "wip").unwrap();
+    let dir = s.wt("foo");
+    s.git_in(&dir, &["branch", "bar"]);
+    s.git_in(&dir, &["switch", "-q", "bar"]);
+    s.commit_in(&dir, "bc");
+    s.git_in(&dir, &["switch", "-q", "foo"]);
+    dir
+}
 
-    let out = s.tonic_in(&foo, &["up"]);
-    assert!(!out.status.success(), "in-place checkout should be refused when dirty");
+#[test]
+fn up_with_tracked_changes_is_refused() {
+    let s = Scratch::new();
+    let dir = foo_with_in_place_child(&s);
+    // modify a *tracked* file — an in-place checkout would carry it onto bar
+    std::fs::write(dir.join("fc"), "edited").unwrap();
+
+    let out = s.tonic_in(&dir, &["up"]);
+    assert!(!out.status.success(), "in-place checkout should be refused with tracked changes");
     assert!(
-        stderr(&out).contains("uncommitted changes"),
-        "expected a dirty-tree error:\n{}",
+        stderr(&out).contains("tracked files"),
+        "expected a tracked-changes error:\n{}",
         stderr(&out)
     );
-    assert_eq!(head(&s, &foo), "foo", "HEAD must be unchanged after a refused checkout");
+    assert_eq!(head(&s, &dir), "foo", "HEAD must be unchanged after a refused checkout");
+}
+
+#[test]
+fn up_with_only_untracked_changes_is_allowed() {
+    let s = Scratch::new();
+    let dir = foo_with_in_place_child(&s);
+    // an untracked file carries across harmlessly — git allows it, so must we (#63)
+    std::fs::write(dir.join("scratch"), "wip").unwrap();
+
+    let out = s.tonic_in(&dir, &["up"]);
+    assert!(out.status.success(), "untracked-only should not block checkout:\n{}", stderr(&out));
+    assert_eq!(head(&s, &dir), "bar", "up should have checked bar out in place");
+    // the untracked file is still there, undisturbed
+    assert!(dir.join("scratch").exists(), "untracked file should carry across");
 }
 
 #[test]

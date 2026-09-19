@@ -1082,21 +1082,6 @@ fn direct_children(
     }
 }
 
-/// True if the worktree at `path` has uncommitted changes (tracked edits or
-/// untracked-but-not-ignored files; gitignored files don't count).
-fn is_dirty(path: &Path) -> bool {
-    // Like is_ignored, this bypasses git_run/git_capture on purpose: we only
-    // want the porcelain output and must tolerate a nonzero exit, which
-    // git_capture would turn into an error.
-    Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(path)
-        .output()
-        .ok()
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false)
-}
-
 /// Working-tree change counts for a worktree, split the way git's porcelain
 /// `XY` status does: `X` = index (staged), `Y` = worktree (unstaged), `??` =
 /// untracked. Drives the `list` dirty indicator — compact `!N` (the total) or
@@ -1112,8 +1097,8 @@ struct Status {
 }
 
 /// Parse `git status --porcelain` into staged/unstaged/untracked counts. Bypasses
-/// git_capture (like is_dirty) since a nonzero exit is tolerable and we want the
-/// raw lines. A malformed/empty read yields an all-zero (clean) Status.
+/// git_capture (like `is_ignored`) since a nonzero exit is tolerable and we want
+/// the raw lines. A malformed/empty read yields an all-zero (clean) Status.
 fn worktree_status(path: &Path) -> Status {
     let mut st = Status::default();
     let Some(out) =
@@ -1405,12 +1390,15 @@ fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str) -> Result<()> {
         println!("{}", w.path.display());
     } else {
         // In-place checkout, unlike a lateral cd, touches this worktree's files.
-        // `git checkout <branch>` *carries* uncommitted changes across on success
-        // (it only refuses on conflict), which would silently move your work onto
-        // another branch — refuse up front so movement never mutates the tree.
-        if is_dirty(repo.cwd()) {
+        // `git checkout <branch>` *carries* uncommitted changes across on success,
+        // which for *tracked* edits would silently move your work onto another
+        // branch — refuse those up front. Untracked files also carry across, but
+        // harmlessly (they're committed nowhere and don't attach to the branch),
+        // and git itself permits the checkout, so we don't block on them (#63).
+        let st = worktree_status(repo.cwd());
+        if st.staged > 0 || st.unstaged > 0 {
             bail!(
-                "worktree has uncommitted changes — commit or stash before checking out '{branch}' in place"
+                "worktree has uncommitted changes to tracked files — commit or stash before checking out '{branch}' in place"
             );
         }
         git_run(repo.cwd(), &["checkout", branch])?;
