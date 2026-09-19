@@ -63,7 +63,27 @@ tonic up / down                # move one branch up (toward the tip) / down (tow
 tonic top / bottom             # jump to the tip / base of the stack
 tonic rm  <branch> [-f] [-d]   # remove a worktree (alias: remove; -f: force, -d: also delete branch)
 tonic shell-init <shell>       # print the shell function for cd integration
+tonic completions <shell>      # print a tab-completion script for your shell
 ```
+
+### Completions
+
+`tonic completions <shell>` prints a completion script (bash, zsh, fish, and the
+other shells `clap` supports). Install it the usual way for your shell, e.g.:
+
+```sh
+# bash — into a completions dir on your fpath, or source from ~/.bashrc
+tonic completions bash > ~/.local/share/bash-completion/completions/tonic
+
+# zsh — onto your $fpath (before compinit), e.g.
+tonic completions zsh > ~/.zfunc/_tonic
+
+# fish
+tonic completions fish > ~/.config/fish/completions/tonic.fish
+```
+
+This completes subcommands and flags. (Branch-name completion for `cd`/`rm` is
+tracked separately — see #21.)
 
 `add` resolves the worktree path from config, runs `git worktree add`, transfers
 `.worktreeinclude` entries (copy or symlink per pattern), then runs `post_create`
