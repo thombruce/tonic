@@ -504,6 +504,13 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
 
     let path = resolve_worktree(&repo, &cfg, branch)?;
 
+    // The branch the worktree actually has checked out (may differ from `branch`
+    // if resolved by dir/path, or be absent when detached). Captured before
+    // removal — the path is gone afterwards. Drives the empty-branch auto-clean.
+    let wt_branch = git_capture(Some(&path), &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .filter(|s| !s.is_empty());
+
     // Are we standing in the worktree we're about to remove? (compare the
     // invoking working tree to the target). Computed before removal, since the
     // dir won't be canonicalizable afterwards.
@@ -530,6 +537,18 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         // -d refuses unmerged branches; -f opts into -D's force delete.
         let flag = if force { "-D" } else { "-d" };
         git_run(&repo.main, &["branch", flag, branch])?;
+    } else if let Some(b) = wt_branch.as_deref() {
+        // Auto-clean an empty/unborn branch (no commits beyond the trunk, nothing
+        // stacked on it) — removing its worktree leaves nothing behind and no work
+        // is lost (#52). Real branches still need the explicit `-d`.
+        if is_empty_branch(&repo, &cfg, b) {
+            git_run(&repo.main, &["branch", "-D", b])?;
+            eprintln!(
+                "{} deleted empty branch: {}",
+                "✓".if_supports_color(Stream::Stderr, |t| t.green()),
+                b
+            );
+        }
     }
 
     eprintln!(
@@ -566,6 +585,33 @@ fn home_checkout(repo: &Repo, cfg: &Config) -> PathBuf {
         }
     }
     repo.main.clone()
+}
+
+/// Whether `branch` is safe to auto-delete after removing its worktree (#52):
+/// it exists, isn't the trunk, and has **no commits beyond the trunk** — an
+/// empty/unborn branch, or one whose commits are already on the trunk (an
+/// ff-ancestor). In every such case deletion loses nothing. Conservative: a
+/// branch carrying any of its own commits (including squash-merged work, which
+/// isn't an ancestor of the trunk — that's #26) is left for the explicit `-d`.
+///
+/// No child guard is needed: a branch with nothing beyond the trunk can't be a
+/// meaningful stack base — anything "stacked on it" is really stacked on the
+/// trunk, and survives independently. (A stacked branch that is itself empty
+/// sits on its parent's commits, so it has commits beyond the trunk and is kept.)
+fn is_empty_branch(repo: &Repo, cfg: &Config, branch: &str) -> bool {
+    let tips = branch_tips(repo);
+    let Some(default) = default_branch(repo, cfg, &tips) else { return false };
+    if branch == default {
+        return false;
+    }
+    if !tips.values().flatten().any(|b| b == branch) {
+        return false; // no such branch (e.g. a detached worktree had none)
+    }
+    let range = format!("{default}..{branch}");
+    matches!(
+        git_capture(Some(&repo.main), &["rev-list", "--count", &range]).as_deref(),
+        Ok("0")
+    )
 }
 
 // ---------------------------------------------------------------------------
