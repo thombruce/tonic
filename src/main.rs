@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "tonic", version, about = "A git worktree companion")]
@@ -52,6 +52,12 @@ enum Cmd {
         #[arg(value_parser = ["bash", "zsh", "fish"])]
         shell: String,
     },
+    /// Print a shell completion script for the given shell
+    Completions {
+        /// Shell to emit completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
     /// Move one branch up the stack, toward the tip (a child)
     Up,
     /// Move one branch down the stack, toward the trunk (the parent)
@@ -91,6 +97,12 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::Cd { branch } => tonic::cd(&branch),
         Cmd::ShellInit { shell } => tonic::shell_init(&shell),
+        Cmd::Completions { shell } => {
+            // clap glue, not domain logic: generate needs the derived command tree.
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "tonic", &mut std::io::stdout());
+            Ok(())
+        }
         Cmd::Up => tonic::up(),
         Cmd::Down => tonic::down(),
         Cmd::Top => tonic::top(),
