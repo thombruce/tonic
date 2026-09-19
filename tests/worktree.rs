@@ -47,6 +47,22 @@ fn rm_keeps_a_branch_that_has_commits() {
 }
 
 #[test]
+fn rm_of_a_detached_worktree_deletes_no_branch() {
+    let s = Scratch::new();
+    s.tonic(&["add", "foo"]); // empty branch — would auto-delete if attached
+    // detach: the worktree no longer has a branch checked out
+    s.git_in(&s.wt("foo"), &["switch", "-q", "--detach", "HEAD"]);
+    let out = s.tonic(&["rm", "foo", "-f"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // no branch was checked out, so nothing is auto-deleted — foo survives
+    assert!(
+        branches(&s).iter().any(|b| b == "foo"),
+        "a detached worktree's rm must not delete any branch:\n{:?}",
+        branches(&s)
+    );
+}
+
+#[test]
 fn rm_keeps_a_stacked_branch_with_no_own_commit() {
     let s = Scratch::new();
     s.tonic(&["add", "a"]);

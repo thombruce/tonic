@@ -604,8 +604,11 @@ fn is_empty_branch(repo: &Repo, cfg: &Config, branch: &str) -> bool {
     if branch == default {
         return false;
     }
+    // Not strictly required (a missing branch makes the rev-list below error →
+    // false anyway), but it short-circuits before git prints an "unknown
+    // revision" warning to stderr for a branch that doesn't exist.
     if !tips.values().flatten().any(|b| b == branch) {
-        return false; // no such branch (e.g. a detached worktree had none)
+        return false;
     }
     let range = format!("{default}..{branch}");
     matches!(
