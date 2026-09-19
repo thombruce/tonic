@@ -182,9 +182,12 @@ worktree_path = "{repo}/.worktrees/{branch}"
 base = "main"
 
 # The repo's trunk branch. Used as the base for `list` stack lineage and as the
-# preferred main worktree for bare-repo fallbacks. tonic auto-detects "main"
-# then "master"; set this for other conventions (e.g. "develop"). A value that
-# doesn't match an existing branch is ignored (falls back to main/master).
+# preferred main worktree for bare-repo fallbacks. Usually you don't need to set
+# this: tonic detects the trunk in order — this config, then the remote's
+# default (origin/HEAD, so a "develop"-default clone just works), then "main",
+# then "master", then init.defaultBranch. Set it only to override that (or for a
+# local-only repo with an unconventional trunk). A value that doesn't match an
+# existing branch is ignored, falling through to the next candidate.
 default_branch = "develop"
 
 # Fetch before resolving a non-local branch, so a branch that's on a remote but

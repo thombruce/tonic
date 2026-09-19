@@ -644,7 +644,7 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
     // The current worktree is the one whose path is the invoking working tree.
     let current = repo.root.as_deref().and_then(|r| std::fs::canonicalize(r).ok());
     let tips = branch_tips(repo);
-    let default = default_branch(cfg, &tips);
+    let default = default_branch(repo, cfg, &tips);
 
     // Pass 1: infer each branch-bearing worktree's lineage and direct children
     // from the commit graph. Memoized so a descendant isn't re-walked per base.
@@ -867,13 +867,51 @@ fn trunk_candidates(cfg: &Config) -> Vec<&str> {
     names
 }
 
-/// The repo's trunk among the local branches: the first `trunk_candidates`
-/// entry that actually exists as a branch. A configured branch that doesn't
-/// exist falls through to `main`/`master`, so a stale config never points
-/// lineage at a phantom ref (#46).
-fn default_branch(cfg: &Config, tips: &HashMap<String, Vec<String>>) -> Option<String> {
-    let names: Vec<&str> = tips.values().flatten().map(String::as_str).collect();
-    trunk_candidates(cfg).into_iter().find(|d| names.contains(d)).map(String::from)
+/// The branch `origin/HEAD` points at — the remote's default — stripped to a
+/// bare branch name (`refs/remotes/origin/develop` → `develop`). `None` when
+/// unset (no remote, or `origin/HEAD` never recorded). Set by `git clone` and
+/// `git remote set-head`. Only `origin` is consulted (the conventional default).
+fn remote_head_branch(repo: &Repo) -> Option<String> {
+    let full =
+        git_capture(Some(repo.cwd()), &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+            .ok()?;
+    full.strip_prefix("refs/remotes/origin/").map(str::to_string)
+}
+
+/// The repo's trunk among the local branches, resolved in order and requiring
+/// that the chosen branch actually exists (so a stale hint never points lineage
+/// at a phantom ref):
+///   1. configured `default_branch` (#46)
+///   2. `origin/HEAD` — the remote's default, so a `develop`-trunk clone works
+///      with no config (#55)
+///   3. `main`, then `master`
+///   4. `init.defaultBranch` — a weak, global hint; last resort, only when the
+///      conventional names are absent
+fn default_branch(repo: &Repo, cfg: &Config, tips: &HashMap<String, Vec<String>>) -> Option<String> {
+    let names: HashSet<&str> = tips.values().flatten().map(String::as_str).collect();
+    let exists = |b: &str| names.contains(b);
+
+    if let Some(d) = cfg.default_branch.as_deref() {
+        if exists(d) {
+            return Some(d.to_string());
+        }
+    }
+    if let Some(d) = remote_head_branch(repo) {
+        if exists(d.as_str()) {
+            return Some(d);
+        }
+    }
+    for d in ["main", "master"] {
+        if exists(d) {
+            return Some(d.to_string());
+        }
+    }
+    if let Ok(d) = git_capture(Some(repo.cwd()), &["config", "init.defaultBranch"]) {
+        if !d.is_empty() && exists(d.as_str()) {
+            return Some(d);
+        }
+    }
+    None
 }
 
 /// True if `a` and `b` share a common ancestor (a merge-base exists). Bounds the
@@ -1238,7 +1276,7 @@ fn navigate(nav: &Nav) -> Result<()> {
     let cfg = Config::load(&repo)?;
     let current = current_branch(&repo)?;
     let tips = branch_tips(&repo);
-    let default = default_branch(&cfg, &tips).ok_or_else(|| {
+    let default = default_branch(&repo, &cfg, &tips).ok_or_else(|| {
         anyhow!("no trunk branch found — stack lineage needs main/master or a configured default_branch")
     })?;
     let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;

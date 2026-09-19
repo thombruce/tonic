@@ -213,6 +213,31 @@ fn paths_are_relative_and_current_is_marked() {
 }
 
 #[test]
+fn trunk_auto_detected_from_origin_head() {
+    let s = Scratch::new();
+    // develop advances past main, so it's a distinct trunk
+    s.tonic(&["add", "develop"]);
+    s.commit_in(&s.wt("develop"), "dc");
+    // a bare origin, with origin/HEAD pointing at develop (as a develop-default
+    // clone would have it) — but NO tonic config
+    let origin = s.root_join("origin.git");
+    s.git(&["clone", "--bare", "-q", ".", origin.to_str().unwrap()]);
+    s.git(&["remote", "add", "origin", origin.to_str().unwrap()]);
+    s.git(&["fetch", "-q", "origin"]);
+    s.git(&["remote", "set-head", "origin", "develop"]);
+    // stack on develop
+    s.tonic_in(&s.wt("develop"), &["add", "a"]);
+    s.commit_in(&s.wt("a"), "ac");
+    s.tonic_in(&s.wt("a"), &["add", "b"]);
+    s.commit_in(&s.wt("b"), "bc");
+
+    let out = stdout(&s.tonic(&["list"]));
+    // no config, but origin/HEAD → develop wins over the main/master guess
+    assert!(out.contains("develop → a → *"), "origin/HEAD trunk not detected:\n{out}");
+    assert!(!out.contains("main → develop"), "develop should be the root, not a child of main:\n{out}");
+}
+
+#[test]
 fn configured_default_branch_anchors_lineage() {
     let s = Scratch::new();
     // develop advances past main, then a stack is built on it
