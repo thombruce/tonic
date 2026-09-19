@@ -50,7 +50,9 @@ fn base_roots_a_new_branch_at_the_given_ref() {
     // from feature's worktree, branch off main explicitly
     let out = s.tonic_in(&s.wt("feature"), &["add", "newb", "--base", "main"]);
     assert!(out.status.success(), "{}", stderr(&out));
-    let log = s.git_in(&s.wt("newb"), &["log", "--oneline"]);
+    // subjects only — `--oneline` includes the SHA, whose hex can contain "fc"
+    // and spuriously match (a flaky-in-CI substring collision).
+    let log = s.git_in(&s.wt("newb"), &["log", "--format=%s"]);
     assert!(!log.contains("fc"), "newb should not include feature's commit:\n{log}");
 }
 
