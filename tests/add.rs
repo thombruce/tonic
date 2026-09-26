@@ -9,7 +9,7 @@
 )]
 
 mod common;
-use common::{stderr, Scratch};
+use common::{stderr, stdout, Scratch};
 
 #[test]
 fn add_creates_a_new_branch_and_worktree() {
@@ -95,6 +95,27 @@ fn new_branch_on_a_branch_does_not_warn() {
         !err.contains("detached") && !err.contains("no base"),
         "a normal new branch must not warn:\n{err}"
     );
+}
+
+#[test]
+fn add_survives_a_failing_post_create_hook() {
+    let s = Scratch::new();
+    // a post_create hook that fails must not abort add — the worktree already
+    // exists, and add must still print the path so the shell wrapper cd's in (#76).
+    std::fs::write(
+        s.repo.join("tonic.toml"),
+        "[[hooks]]\nevent = \"post_create\"\nrun = \"exit 3\"\n",
+    )
+    .unwrap();
+    let out = s.tonic(&["add", "feat"]);
+    assert!(out.status.success(), "post_create failure must not abort add:\n{}", stderr(&out));
+    assert!(s.wt("feat").exists(), "worktree should still be created");
+    assert!(
+        stdout(&out).trim().ends_with("repo-feat"),
+        "the path must still print for the wrapper to cd:\n{}",
+        stdout(&out)
+    );
+    assert!(stderr(&out).contains("hook failed"), "the failure should be surfaced:\n{}", stderr(&out));
 }
 
 #[test]

@@ -522,7 +522,9 @@ pub fn add(
     git_run(repo.cwd(), &arg_refs)?;
 
     transfer_includes(&repo, &path, &cfg)?;
-    run_hooks(&cfg, "post_create", &repo, branch, &path)?;
+    // post_create is best-effort: a failing hook warns but doesn't abort (the
+    // worktree exists), so `add` still prints the path and the wrapper cd's (#76).
+    run_hooks(&cfg, "post_create", &repo, branch, &path, false)?;
 
     // Human status → stderr; the worktree path → stdout only, so the shell
     // integration (`tonic shell-init`) can `cd "$(tonic add ...)"`.
@@ -564,7 +566,8 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         .zip(std::fs::canonicalize(&path).ok())
         .is_some_and(|(here, target)| here == target);
 
-    run_hooks(&cfg, "pre_remove", &repo, branch, &path)?;
+    // pre_remove is fatal: nothing is removed yet, so a failing hook blocks rm.
+    run_hooks(&cfg, "pre_remove", &repo, branch, &path, true)?;
 
     // Run git from the main worktree, not the target: if we're removing the
     // current worktree, its dir is about to disappear from under us.
@@ -1702,7 +1705,21 @@ fn copy_recursive(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_hooks(cfg: &Config, event: &str, repo: &Repo, branch: &str, worktree: &Path) -> Result<()> {
+/// Run the configured hooks for `event` in the worktree dir. `fatal` picks the
+/// failure policy (#76): `pre_remove` is fatal — nothing's been removed yet, so a
+/// failing hook must block the operation. `post_create` is **not** — the worktree
+/// already exists and `add`'s core job is done, so a failing setup hook only
+/// warns (and the remaining hooks still run), leaving `add` to finish (print the
+/// path, exit 0) so the shell wrapper still `cd`s in. A best-effort provisioning
+/// step shouldn't strand you outside a worktree that was created fine.
+fn run_hooks(
+    cfg: &Config,
+    event: &str,
+    repo: &Repo,
+    branch: &str,
+    worktree: &Path,
+    fatal: bool,
+) -> Result<()> {
     let wt = worktree.to_string_lossy();
     let vars = [("repo", repo.name.as_str()), ("branch", branch), ("worktree_path", &wt)];
     for hook in cfg.hooks.as_deref().unwrap_or(&[]).iter().filter(|h| h.event == event) {
@@ -1713,11 +1730,21 @@ fn run_hooks(cfg: &Config, event: &str, repo: &Repo, branch: &str, worktree: &Pa
         // Hook stdout → our stderr (streamed, so long hooks like npm install
         // stay live) so it can't pollute the worktree path on tonic's stdout.
         redirect_stdout_to_stderr(&mut command);
-        let status = command
-            .status()
-            .with_context(|| format!("running hook: {cmd}"))?;
-        if !status.success() {
-            bail!("hook failed ({event}): {cmd}");
+        // A nonzero exit or a spawn failure are both "the hook didn't succeed".
+        let outcome = command.status();
+        let failure = match &outcome {
+            Ok(s) if s.success() => None,
+            Ok(s) => Some(s.to_string()),
+            Err(e) => Some(format!("could not run: {e}")),
+        };
+        if let Some(reason) = failure {
+            if fatal {
+                bail!("hook failed ({event}): {cmd} ({reason})");
+            }
+            eprintln!(
+                "{} hook failed ({event}): {cmd} ({reason}) — worktree kept, continuing",
+                "!".if_supports_color(Stream::Stderr, |t| t.yellow())
+            );
         }
     }
     Ok(())
