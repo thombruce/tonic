@@ -178,6 +178,16 @@ remote-tracking step), `--base <ref>` starts a new branch from `<ref>` (override
 the `base` config). `base`/`--base` only apply when *creating* a new branch — they
 have no effect when checking out an existing local or remote branch.
 
+When a new branch falls back to `HEAD` and that HEAD isn't a plain branch
+checkout, tonic warns (it never silently guesses a surprising base):
+
+- **Detached HEAD** (e.g. after `gh stack checkout` or an interrupted rebase) —
+  the branch is rooted at that commit, which may be an ancestor of the branch you
+  think you're on. tonic names the commit; pass `--base` to root it deliberately.
+- **Run from a bare directory** (no worktree) — there's no current checkout, and
+  the bare repo's `HEAD` is an arbitrary symref, so tonic starts the branch from
+  the trunk instead and says so. Run from a worktree, or pass `--base`, to choose.
+
 ## Configuration
 
 Config is TOML, merged from a chain (later wins per key, mirroring git's

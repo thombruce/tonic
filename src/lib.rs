@@ -239,6 +239,45 @@ fn new_branch_args(args: &mut Vec<String>, branch: &str, path: &str, base: Optio
     }
 }
 
+/// The start point for a *new* branch when the user gave neither `--base` nor a
+/// config base. Without one, git roots the branch at the HEAD of the dir it runs
+/// in — fine when that's a worktree on a named branch, but silently surprising in
+/// two cases, so warn (never block — git's behaviour is legitimate) (#74):
+///
+/// - **Bare-dir invocation:** the run dir is the bare repo, whose HEAD is an
+///   arbitrary/stale symref unrelated to any worktree's checkout. Default to the
+///   resolved trunk instead, so the base is predictable, and say so.
+/// - **Detached HEAD in a worktree:** git would root the branch at that commit
+///   (maybe an ancestor of the branch you think you're on, e.g. after
+///   `gh stack checkout`). Legitimate, but name it so a mismatch is visible.
+///
+/// An explicit base is returned unchanged, no warning. Returns `None` to mean
+/// "let git use HEAD" (the current branch, or the detached commit).
+fn resolve_new_base(repo: &Repo, cfg: &Config, explicit: Option<&str>) -> Option<String> {
+    if let Some(b) = explicit {
+        return Some(b.to_string());
+    }
+    if repo.root.is_none() {
+        let tips = branch_tips(repo);
+        if let Some(d) = default_branch(repo, cfg, &tips) {
+            // No indent: this fires *before* the `✓ created` header, so it's a
+            // standalone notice, not a sub-item of it (unlike `  tracking …`).
+            eprintln!(
+                "no base given; starting from {d} (run from a worktree or pass --base to choose)"
+            );
+            return Some(d);
+        }
+        return None; // no trunk resolved — fall back to git's HEAD default
+    }
+    // Worktree: HEAD is the current checkout. `symbolic-ref` fails when detached.
+    if git_capture(Some(repo.cwd()), &["symbolic-ref", "--quiet", "HEAD"]).is_err() {
+        let head =
+            git_capture(Some(repo.cwd()), &["rev-parse", "--short", "HEAD"]).unwrap_or_default();
+        eprintln!("HEAD is detached; starting from {head} (pass --base to root the branch elsewhere)");
+    }
+    None
+}
+
 /// Remotes that have a remote-tracking ref for `branch` (requires a prior fetch;
 /// tonic matches existing `refs/remotes/*` refs, it does not fetch).
 fn remotes_with_branch(repo: &Repo, branch: &str) -> Vec<String> {
@@ -468,11 +507,15 @@ pub fn add(
                 args.push(format!("{r}/{branch}"));
                 tracking = Some(format!("{r}/{branch}"));
             }
-            None => new_branch_args(&mut args, branch, &path_str, effective_base),
+            None => {
+                let nb = resolve_new_base(&repo, &cfg, effective_base);
+                new_branch_args(&mut args, branch, &path_str, nb.as_deref());
+            }
         }
     } else {
         // -b / --base: force a new branch.
-        new_branch_args(&mut args, branch, &path_str, effective_base);
+        let nb = resolve_new_base(&repo, &cfg, effective_base);
+        new_branch_args(&mut args, branch, &path_str, nb.as_deref());
     }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
