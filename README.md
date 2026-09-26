@@ -242,6 +242,11 @@ mode = "copy"
 
 # Lifecycle hooks. Placeholders: {repo}, {branch}, {worktree_path}.
 # Events: post_create, pre_remove. Run via `sh -c` in the worktree dir.
+# Failure policy differs by event: a failing pre_remove *blocks* the removal
+# (nothing's been removed yet); a failing post_create only *warns* — the worktree
+# is already created, so add still finishes and cd's you in (fix your hook and
+# re-run it by hand). A hook's stdout is routed to stderr, keeping tonic's own
+# stdout (the worktree path) clean for the shell integration.
 [[hooks]]
 event = "post_create"
 run = "createdb tonic_{branch}"

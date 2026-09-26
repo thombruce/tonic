@@ -79,6 +79,21 @@ fn rm_keeps_a_stacked_branch_with_no_own_commit() {
 }
 
 #[test]
+fn rm_is_blocked_by_a_failing_pre_remove_hook() {
+    let s = Scratch::new();
+    // pre_remove is fatal: a failing hook must block rm (nothing removed yet).
+    std::fs::write(
+        s.repo.join("tonic.toml"),
+        "[[hooks]]\nevent = \"pre_remove\"\nrun = \"exit 4\"\n",
+    )
+    .unwrap();
+    s.tonic(&["add", "foo"]);
+    let out = s.tonic(&["rm", "foo", "-f"]);
+    assert!(!out.status.success(), "a failing pre_remove must block rm");
+    assert!(s.wt("foo").exists(), "the worktree must survive a blocked rm");
+}
+
+#[test]
 fn rm_removes_a_worktree() {
     let s = Scratch::new();
     s.tonic(&["add", "foo"]);
