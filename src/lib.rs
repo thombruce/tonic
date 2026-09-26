@@ -260,8 +260,10 @@ fn resolve_new_base(repo: &Repo, cfg: &Config, explicit: Option<&str>) -> Option
     if repo.root.is_none() {
         let tips = branch_tips(repo);
         if let Some(d) = default_branch(repo, cfg, &tips) {
+            // No indent: this fires *before* the `✓ created` header, so it's a
+            // standalone notice, not a sub-item of it (unlike `  tracking …`).
             eprintln!(
-                "  no base given; starting from {d} (run from a worktree or pass --base to choose)"
+                "no base given; starting from {d} (run from a worktree or pass --base to choose)"
             );
             return Some(d);
         }
@@ -271,7 +273,7 @@ fn resolve_new_base(repo: &Repo, cfg: &Config, explicit: Option<&str>) -> Option
     if git_capture(Some(repo.cwd()), &["symbolic-ref", "--quiet", "HEAD"]).is_err() {
         let head =
             git_capture(Some(repo.cwd()), &["rev-parse", "--short", "HEAD"]).unwrap_or_default();
-        eprintln!("  HEAD is detached; starting from {head} (pass --base to root the branch elsewhere)");
+        eprintln!("HEAD is detached; starting from {head} (pass --base to root the branch elsewhere)");
     }
     None
 }
