@@ -57,6 +57,47 @@ fn base_roots_a_new_branch_at_the_given_ref() {
 }
 
 #[test]
+fn new_branch_from_a_detached_head_warns_and_roots_at_the_commit() {
+    let s = Scratch::new();
+    s.tonic(&["add", "base"]);
+    s.commit_in(&s.wt("base"), "bc");
+    let base = s.wt("base");
+    // detach the worktree's HEAD (as `gh stack checkout` / a rebase would) — a new
+    // branch with no --base then roots at this commit, not a named branch (#74).
+    s.git_in(&base, &["switch", "-q", "--detach", "HEAD"]);
+    let detached = s.git_in(&base, &["rev-parse", "HEAD"]);
+
+    let out = s.tonic_in(&base, &["add", "child"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("detached"),
+        "a new branch from a detached HEAD should warn:\n{}",
+        stderr(&out)
+    );
+    // still created — from the detached commit
+    assert_eq!(
+        s.git_in(&s.wt("child"), &["rev-parse", "HEAD"]),
+        detached,
+        "new branch should be rooted at the detached commit"
+    );
+}
+
+#[test]
+fn new_branch_on_a_branch_does_not_warn() {
+    let s = Scratch::new();
+    s.tonic(&["add", "feature"]);
+    s.commit_in(&s.wt("feature"), "fc");
+    // on a named branch in a worktree — the normal case, no surprise, no warning
+    let out = s.tonic_in(&s.wt("feature"), &["add", "child"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        !err.contains("detached") && !err.contains("no base"),
+        "a normal new branch must not warn:\n{err}"
+    );
+}
+
+#[test]
 fn add_tracks_a_remote_only_branch() {
     let s = Scratch::new();
     // set up a bare origin and a branch that exists only on the remote
