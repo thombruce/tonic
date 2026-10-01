@@ -586,6 +586,13 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         .ok()
         .filter(|s| !s.is_empty());
 
+    // Decide the empty-branch auto-clean *before* removal: `is_empty_branch` reads
+    // via `repo.cwd()` (branch tips, the recorded base), which is the invoking
+    // worktree — dead once we remove the current one. Computing it now (cwd alive)
+    // keeps the clean-up working from inside the worktree being removed (#52/#78).
+    let auto_delete_empty = !delete_branch
+        && wt_branch.as_deref().is_some_and(|b| is_empty_branch(&repo, &cfg, b));
+
     // Are we standing in the worktree we're about to remove? (compare the
     // invoking working tree to the target). Computed before removal, since the
     // dir won't be canonicalizable afterwards.
@@ -613,11 +620,12 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         // -d refuses unmerged branches; -f opts into -D's force delete.
         let flag = if force { "-D" } else { "-d" };
         git_run(&repo.main, &["branch", flag, branch])?;
-    } else if let Some(b) = wt_branch.as_deref() {
-        // Auto-clean an empty/unborn branch (no commits beyond the trunk, nothing
-        // stacked on it) — removing its worktree leaves nothing behind and no work
-        // is lost (#52). Real branches still need the explicit `-d`.
-        if is_empty_branch(&repo, &cfg, b) {
+    } else if auto_delete_empty {
+        // Auto-clean an empty/unborn branch (no commits of its own beyond its base)
+        // — removing its worktree leaves nothing behind and no work is lost
+        // (#52/#78). Emptiness was decided before removal (see above). Real branches
+        // still need the explicit `-d`.
+        if let Some(b) = wt_branch.as_deref() {
             git_run(&repo.main, &["branch", "-D", b])?;
             eprintln!(
                 "{} deleted empty branch: {}",

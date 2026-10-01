@@ -80,6 +80,23 @@ fn rm_auto_deletes_an_empty_branch_stacked_on_a_descendant() {
 }
 
 #[test]
+fn rm_auto_deletes_an_empty_branch_from_inside_its_own_worktree() {
+    let s = Scratch::new();
+    s.tonic(&["add", "a"]);
+    s.commit_in(&s.wt("a"), "ac");
+    s.tonic_in(&s.wt("a"), &["add", "b"]); // b off a, empty
+    // the common path: finish up, run rm from *inside* the worktree being removed.
+    // emptiness must be decided before removal — cwd is gone afterwards.
+    let out = s.tonic_in(&s.wt("b"), &["rm", "b", "-f"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        !branches(&s).iter().any(|x| x == "b"),
+        "empty branch should be deleted even when removing its own worktree:\n{:?}",
+        branches(&s)
+    );
+}
+
+#[test]
 fn rm_keeps_a_stacked_branch_with_its_own_commit() {
     let s = Scratch::new();
     s.tonic(&["add", "a"]);
