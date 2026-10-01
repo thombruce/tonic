@@ -251,11 +251,19 @@ fn new_branch_args(args: &mut Vec<String>, branch: &str, path: &str, base: Optio
 ///   (maybe an ancestor of the branch you think you're on, e.g. after
 ///   `gh stack checkout`). Legitimate, but name it so a mismatch is visible.
 ///
-/// An explicit base is returned unchanged, no warning. Returns `None` to mean
-/// "let git use HEAD" (the current branch, or the detached commit).
-fn resolve_new_base(repo: &Repo, cfg: &Config, explicit: Option<&str>) -> Option<String> {
+/// Returns `(start_point, parent)`: `start_point` is what to pass git (`None` =
+/// "use HEAD"); `parent` is the base **branch** to record as the new branch's
+/// lineage parent (`branch.<new>.tonicbase`, #78) — `None` when there's no named
+/// parent (a commit/tag base, or a detached HEAD). An explicit base returns
+/// unchanged with no warning; it's recorded only when it names a branch.
+fn resolve_new_base(
+    repo: &Repo,
+    cfg: &Config,
+    explicit: Option<&str>,
+) -> (Option<String>, Option<String>) {
     if let Some(b) = explicit {
-        return Some(b.to_string());
+        let parent = branch_exists(repo, b).then(|| b.to_string());
+        return (Some(b.to_string()), parent);
     }
     if repo.root.is_none() {
         let tips = branch_tips(repo);
@@ -265,17 +273,23 @@ fn resolve_new_base(repo: &Repo, cfg: &Config, explicit: Option<&str>) -> Option
             eprintln!(
                 "no base given; starting from {d} (run from a worktree or pass --base to choose)"
             );
-            return Some(d);
+            return (Some(d.clone()), Some(d));
         }
-        return None; // no trunk resolved — fall back to git's HEAD default
+        return (None, None); // no trunk resolved — fall back to git's HEAD default
     }
-    // Worktree: HEAD is the current checkout. `symbolic-ref` fails when detached.
-    if git_capture(Some(repo.cwd()), &["symbolic-ref", "--quiet", "HEAD"]).is_err() {
-        let head =
-            git_capture(Some(repo.cwd()), &["rev-parse", "--short", "HEAD"]).unwrap_or_default();
-        eprintln!("HEAD is detached; starting from {head} (pass --base to root the branch elsewhere)");
+    // Worktree: HEAD is the current checkout — record it as the parent when it's a
+    // named branch; `symbolic-ref --short` fails (and we warn) when detached.
+    match git_capture(Some(repo.cwd()), &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        Ok(b) if !b.is_empty() => (None, Some(b)),
+        _ => {
+            let head = git_capture(Some(repo.cwd()), &["rev-parse", "--short", "HEAD"])
+                .unwrap_or_default();
+            eprintln!(
+                "HEAD is detached; starting from {head} (pass --base to root the branch elsewhere)"
+            );
+            (None, None)
+        }
     }
-    None
 }
 
 /// Remotes that have a remote-tracking ref for `branch` (requires a prior fetch;
@@ -479,6 +493,10 @@ pub fn add(
     let path_str = path.to_string_lossy().into_owned();
     let mut args: Vec<String> = vec!["worktree".into(), "add".into()];
     let mut tracking: Option<String> = None;
+    // The base branch to record as the new branch's lineage parent (#78), set on
+    // the new-branch paths below. None when checking out an existing/remote branch
+    // (nothing new to record) or when there's no named parent.
+    let mut record_parent: Option<String> = None;
 
     if !force_new && local {
         // Existing local branch, not checked out anywhere: check it out.
@@ -508,18 +526,30 @@ pub fn add(
                 tracking = Some(format!("{r}/{branch}"));
             }
             None => {
-                let nb = resolve_new_base(&repo, &cfg, effective_base);
-                new_branch_args(&mut args, branch, &path_str, nb.as_deref());
+                let (start, parent) = resolve_new_base(&repo, &cfg, effective_base);
+                record_parent = parent;
+                new_branch_args(&mut args, branch, &path_str, start.as_deref());
             }
         }
     } else {
         // -b / --base: force a new branch.
-        let nb = resolve_new_base(&repo, &cfg, effective_base);
-        new_branch_args(&mut args, branch, &path_str, nb.as_deref());
+        let (start, parent) = resolve_new_base(&repo, &cfg, effective_base);
+        record_parent = parent;
+        new_branch_args(&mut args, branch, &path_str, start.as_deref());
     }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     git_run(repo.cwd(), &arg_refs)?;
+
+    // Record the new branch's lineage parent in git's own branch config (#78), so
+    // an empty branch — whose tip coincides with its base's, leaving the commit
+    // graph unable to tell child from parent — still shows the right lineage. git
+    // prunes this on branch delete/rename, so it can't go stale or orphan.
+    if let Some(parent) = &record_parent {
+        let key = format!("branch.{branch}.tonicbase");
+        // Best-effort: a failed record mustn't abort an otherwise-good add.
+        let _ = git_run(repo.cwd(), &["config", &key, parent]);
+    }
 
     transfer_includes(&repo, &path, &cfg)?;
     // post_create is best-effort: a failing hook warns but doesn't abort (the
@@ -1107,9 +1137,78 @@ fn lineage_cached(
     if let Some(chain) = memo.get(branch) {
         return chain.clone();
     }
+    // The trunk is the root of every chain — never extend it via a record (its own
+    // base, if any, is above the configured trunk and not part of this stack).
+    if branch == default {
+        let chain = vec![branch.to_string()];
+        memo.insert(branch.to_string(), chain.clone());
+        return chain;
+    }
+    // A recorded base (set by `add`, #78) is the one case pure inference can't
+    // resolve: an empty branch shares its base's tip commit, so the commit graph
+    // alone can't tell child from parent. When present *and still valid* (the
+    // parent exists and is an ancestor — a deleted/rebased-away record is ignored,
+    // so a stale hint never yields a wrong chain), build the chain from it:
+    // parent's lineage + this branch. Recurses parent→parent, memoized.
+    if let Some(parent) = recorded_base(repo, branch, default, tips) {
+        // Break any pathological record cycle: a tentative entry means a re-entry
+        // for `branch` during the recursion returns early instead of looping.
+        memo.insert(branch.to_string(), vec![branch.to_string()]);
+        let mut chain = lineage_cached(repo, &parent, tips, default, wt, memo);
+        if !chain.iter().any(|c| c == branch) {
+            chain.push(branch.to_string());
+        }
+        memo.insert(branch.to_string(), chain.clone());
+        return chain;
+    }
     let chain = lineage(repo, branch, tips, default, wt);
     memo.insert(branch.to_string(), chain.clone());
     chain
+}
+
+/// The branch `add` recorded as `branch`'s base (`branch.<branch>.tonicbase`),
+/// used **only** when inference genuinely can't resolve the parent: an empty
+/// branch whose tip coincides with another branch. A branch with a unique tip is
+/// resolved reliably by the commit walk, so defer to it — which also means a
+/// stale record can't override a *correct* inferred chain after a re-parenting
+/// rebase (#78). When consulted, the record is still **validated**: the parent
+/// must exist and be an ancestor, else it's dropped and inference resumes.
+///
+/// Perf: the "is the tip shared" gate is in-memory over the `tips` map already in
+/// hand, so the common case (unique tip) costs **no** git calls — the `git config`
+/// read and `merge-base` only run for the rare ambiguous branch. git prunes the
+/// config entry on branch delete/rename, so records don't accumulate.
+fn recorded_base(
+    repo: &Repo,
+    branch: &str,
+    default: &str,
+    tips: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    // In-memory gate (no git): does another non-trunk branch sit at `branch`'s
+    // tip? If not, the tip is unique and inference is reliable — skip the record.
+    let shares_tip = tips.values().any(|names| {
+        names.iter().any(|n| n == branch)
+            && names.iter().any(|n| n != branch && n != default)
+    });
+    if !shares_tip {
+        return None;
+    }
+    let key = format!("branch.{branch}.tonicbase");
+    let parent = git_capture(Some(repo.cwd()), &["config", &key]).ok()?;
+    if parent.is_empty() || parent == branch {
+        return None;
+    }
+    if !tips.values().flatten().any(|b| b == &parent) {
+        return None; // recorded parent no longer exists
+    }
+    // Ancestor check inspects the raw exit (0 = ancestor, 1 = not), like is_ignored.
+    let is_ancestor = Command::new("git")
+        .args(["merge-base", "--is-ancestor", &parent, branch])
+        .current_dir(repo.cwd())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    is_ancestor.then_some(parent)
 }
 
 /// The branches stacked directly on a branch (`list`'s child annotation).

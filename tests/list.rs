@@ -248,6 +248,46 @@ fn trunk_auto_detected_from_origin_head() {
 }
 
 #[test]
+fn empty_branch_off_a_descendant_keeps_its_parent() {
+    let s = Scratch::new();
+    // a stack built with tonic add, so each branch records its base (#78)
+    s.tonic(&["add", "a"]);
+    s.commit_in(&s.wt("a"), "ac");
+    s.tonic_in(&s.wt("a"), &["add", "b"]);
+    s.commit_in(&s.wt("b"), "bc");
+    s.tonic_in(&s.wt("b"), &["add", "c"]); // c off b, no commit → empty, tip == b's
+    let out = stdout(&s.tonic(&["list"]));
+    // c's tip coincides with b's, so pure inference would skip b and show `a → *c`;
+    // the recorded base keeps b as c's parent.
+    assert!(out.contains("a → b → *c"), "empty branch lost its recorded parent:\n{out}");
+}
+
+#[test]
+fn record_is_ignored_for_a_unique_tip_branch() {
+    let s = Scratch::new();
+    linear_stack(&s); // main → a → b, each with its own commit (unique tips)
+    // plant a WRONG record on b claiming it sits directly on main (skipping a)
+    s.git(&["config", "branch.b.tonicbase", "main"]);
+    let out = stdout(&s.tonic(&["list"]));
+    // b's tip is unique, so inference is authoritative and the record is not even
+    // consulted — a is kept. (Guards against a stale record overriding a correct
+    // inferred chain, e.g. after a re-parenting rebase.)
+    assert!(out.contains("main → a → *b"), "inference must win for a unique-tip branch:\n{out}");
+}
+
+#[test]
+fn a_stale_tonicbase_record_is_ignored() {
+    let s = Scratch::new();
+    s.tonic(&["add", "solo"]);
+    s.commit_in(&s.wt("solo"), "sc");
+    // a record pointing at a branch that doesn't exist must be dropped, not trusted
+    s.git(&["config", "branch.solo.tonicbase", "ghost"]);
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(!out.contains("ghost"), "a stale record leaked into the lineage:\n{out}");
+    assert!(out.contains("*solo"), "solo should still render via inference:\n{out}");
+}
+
+#[test]
 fn configured_default_branch_anchors_lineage() {
     let s = Scratch::new();
     // develop advances past main, then a stack is built on it
@@ -280,17 +320,19 @@ fn stale_default_branch_config_falls_back() {
 }
 
 #[test]
-fn empty_branch_gains_lineage_after_a_commit() {
+fn empty_branch_shows_its_lineage_immediately_via_the_record() {
     let s = Scratch::new();
     s.tonic(&["add", "foo"]);
     s.commit_in(&s.wt("foo"), "fc");
-    s.tonic_in(&s.wt("foo"), &["add", "empty"]); // off foo, no commit yet
+    s.tonic_in(&s.wt("foo"), &["add", "empty"]); // off foo, no commit of its own
 
+    // the recorded base (#78) resolves the parent even while empty twins foo's
+    // tip — no transient "no lineage until it commits" gap for a tonic-made branch
     let before = stdout(&s.tonic(&["list"]));
-    assert!(!before.contains("→ empty"), "empty branch should show no lineage yet:\n{before}");
+    assert!(before.contains("main → foo → *empty"), "record should give lineage at once:\n{before}");
 
+    // and it stays correct once it has a commit of its own
     s.commit_in(&s.wt("empty"), "ec");
     let after = stdout(&s.tonic(&["list"]));
-    // empty's row now shows `main → foo → *`.
-    assert!(after.contains("main → foo → *empty"), "lineage should appear after a commit:\n{after}");
+    assert!(after.contains("main → foo → *empty"), "lineage should remain correct:\n{after}");
 }
