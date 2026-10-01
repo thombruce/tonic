@@ -89,9 +89,10 @@ tracked separately — see #21.)
 `.worktreeinclude` entries (copy or symlink per pattern), then runs `post_create`
 hooks. `rm` runs `pre_remove` hooks, removes the worktree, and optionally deletes
 the branch. It also **auto-cleans an empty branch** — if the removed worktree's
-branch has no commits beyond the trunk (an unborn/scratch branch, or one already
-folded into the trunk), it's deleted too, since nothing is lost. A branch that
-carries its own commits is always kept; use `-d` to delete it explicitly.
+branch has no commits of its own beyond its base (an unborn/scratch branch,
+including one stacked on another branch), it's deleted too, since nothing is lost.
+A branch that carries its own commits is always kept; use `-d` to delete it
+explicitly.
 
 Worktrees are **sibling directories**, so `list` stays flat. Each row leads with
 the **worktree directory** (relative to where they live, not a long absolute

@@ -63,17 +63,34 @@ fn rm_of_a_detached_worktree_deletes_no_branch() {
 }
 
 #[test]
-fn rm_keeps_a_stacked_branch_with_no_own_commit() {
+fn rm_auto_deletes_an_empty_branch_stacked_on_a_descendant() {
     let s = Scratch::new();
     s.tonic(&["add", "a"]);
     s.commit_in(&s.wt("a"), "ac");
-    s.tonic_in(&s.wt("a"), &["add", "b"]); // off a, no own commit — but a's commit is beyond trunk
+    s.tonic_in(&s.wt("a"), &["add", "b"]); // off a, no own commit → empty vs its base a
     let out = s.tonic(&["rm", "b"]);
     assert!(out.status.success(), "{}", stderr(&out));
-    // conservative: b carries commits beyond the trunk (a's), so it's not "empty"
+    // measured against its recorded base (a), b is empty → auto-deleted (#78);
+    // measuring against the trunk alone (the original #52) missed this case.
+    assert!(
+        !branches(&s).iter().any(|b| b == "b"),
+        "an empty branch stacked on a descendant should be auto-deleted:\n{:?}",
+        branches(&s)
+    );
+}
+
+#[test]
+fn rm_keeps_a_stacked_branch_with_its_own_commit() {
+    let s = Scratch::new();
+    s.tonic(&["add", "a"]);
+    s.commit_in(&s.wt("a"), "ac");
+    s.tonic_in(&s.wt("a"), &["add", "b"]);
+    s.commit_in(&s.wt("b"), "bc"); // b has a commit of its own beyond a
+    let out = s.tonic(&["rm", "b", "-f"]);
+    assert!(out.status.success(), "{}", stderr(&out));
     assert!(
         branches(&s).iter().any(|b| b == "b"),
-        "a stacked branch (commits beyond trunk) must be kept:\n{:?}",
+        "a stacked branch with its own commit must be kept:\n{:?}",
         branches(&s)
     );
 }

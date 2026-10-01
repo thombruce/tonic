@@ -664,29 +664,33 @@ fn home_checkout(repo: &Repo, cfg: &Config) -> PathBuf {
 }
 
 /// Whether `branch` is safe to auto-delete after removing its worktree (#52):
-/// it exists, isn't the trunk, and has **no commits beyond the trunk** — an
-/// empty/unborn branch, or one whose commits are already on the trunk (an
-/// ff-ancestor). In every such case deletion loses nothing. Conservative: a
-/// branch carrying any of its own commits (including squash-merged work, which
-/// isn't an ancestor of the trunk — that's #26) is left for the explicit `-d`.
+/// it exists, isn't the trunk, and has **no commits of its own beyond its base** —
+/// an empty/unborn branch (or one ff-folded into its base). In every such case
+/// deletion loses nothing. Conservative: a branch carrying any of its own commits
+/// (including squash-merged work, which isn't an ancestor of its base — that's
+/// #26) is left for the explicit `-d`.
 ///
-/// No child guard is needed: a branch with nothing beyond the trunk can't be a
-/// meaningful stack base — anything "stacked on it" is really stacked on the
-/// trunk, and survives independently. (A stacked branch that is itself empty
-/// sits on its parent's commits, so it has commits beyond the trunk and is kept.)
+/// The base is the branch's **recorded parent** when valid, else the trunk (#78).
+/// Measuring against the trunk alone (the original #52) missed an empty branch
+/// stacked on a *descendant* — its ancestors' commits are beyond the trunk, so it
+/// looked non-empty; measuring against its actual base catches it.
+///
+/// No child guard is needed: a branch with nothing beyond its base can't be a
+/// meaningful stack base of its own — anything "stacked on it" is really stacked
+/// on that base and survives independently.
 fn is_empty_branch(repo: &Repo, cfg: &Config, branch: &str) -> bool {
     let tips = branch_tips(repo);
     let Some(default) = default_branch(repo, cfg, &tips) else { return false };
     if branch == default {
         return false;
     }
-    // Not strictly required (a missing branch makes the rev-list below error →
-    // false anyway), but it short-circuits before git prints an "unknown
-    // revision" warning to stderr for a branch that doesn't exist.
+    // Short-circuit a missing branch before git prints an "unknown revision"
+    // warning (the rev-list below would error → false anyway).
     if !tips.values().flatten().any(|b| b == branch) {
         return false;
     }
-    let range = format!("{default}..{branch}");
+    let base = recorded_base(repo, branch, &default, &tips).unwrap_or_else(|| default.clone());
+    let range = format!("{base}..{branch}");
     matches!(
         git_capture(Some(&repo.main), &["rev-list", "--count", &range]).as_deref(),
         Ok("0")
