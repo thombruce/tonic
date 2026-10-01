@@ -100,10 +100,13 @@ named and flagged with `*`; when it's stacked, its ancestors precede it — e.g.
 `▸ app-b   main → a → *b` for a branch on top of `a` on top of `main`. A branch
 sitting directly on the trunk shows bare (`*foo`); children stacked on it
 continue the chain — ` → child` for a single child, ` → [N]` for a fork of N,
-even when that child has no worktree of its own. Lineage is derived from the
-commit graph (no stored state); a freshly-created branch with no commits of its
-own shows just `*branch` until it has a commit. The current worktree is marked
-`▸`.
+even when that child has no worktree of its own. Lineage is inferred from the
+commit graph. The one exception: a brand-new empty branch sits at the exact
+commit of the branch it was created from, so the graph alone can't tell which is
+the parent — for branches **tonic created**, it records the parent (in git's own
+`branch.<name>` config, which git prunes when the branch is deleted or renamed)
+so the lineage is right immediately. An empty branch created outside tonic shows
+bare until it has a commit of its own. The current worktree is marked `▸`.
 
 Each row ends with a compact status, shown only when it applies, following the
 usual git-prompt conventions:
