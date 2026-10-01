@@ -1150,7 +1150,7 @@ fn lineage_cached(
     // parent exists and is an ancestor — a deleted/rebased-away record is ignored,
     // so a stale hint never yields a wrong chain), build the chain from it:
     // parent's lineage + this branch. Recurses parent→parent, memoized.
-    if let Some(parent) = recorded_base(repo, branch, tips) {
+    if let Some(parent) = recorded_base(repo, branch, default, tips) {
         // Break any pathological record cycle: a tentative entry means a re-entry
         // for `branch` during the recursion returns early instead of looping.
         memo.insert(branch.to_string(), vec![branch.to_string()]);
@@ -1166,12 +1166,33 @@ fn lineage_cached(
     chain
 }
 
-/// The branch `add` recorded as `branch`'s base (`branch.<branch>.tonicbase`), if
-/// it's still **valid**: the parent branch exists and is an ancestor of `branch`.
-/// A record whose parent was deleted or rebased away fails the check and is
-/// ignored, so a stale hint can only ever be dropped, never mislead (#78). git
-/// prunes the config entry on branch delete/rename, so records don't accumulate.
-fn recorded_base(repo: &Repo, branch: &str, tips: &HashMap<String, Vec<String>>) -> Option<String> {
+/// The branch `add` recorded as `branch`'s base (`branch.<branch>.tonicbase`),
+/// used **only** when inference genuinely can't resolve the parent: an empty
+/// branch whose tip coincides with another branch. A branch with a unique tip is
+/// resolved reliably by the commit walk, so defer to it — which also means a
+/// stale record can't override a *correct* inferred chain after a re-parenting
+/// rebase (#78). When consulted, the record is still **validated**: the parent
+/// must exist and be an ancestor, else it's dropped and inference resumes.
+///
+/// Perf: the "is the tip shared" gate is in-memory over the `tips` map already in
+/// hand, so the common case (unique tip) costs **no** git calls — the `git config`
+/// read and `merge-base` only run for the rare ambiguous branch. git prunes the
+/// config entry on branch delete/rename, so records don't accumulate.
+fn recorded_base(
+    repo: &Repo,
+    branch: &str,
+    default: &str,
+    tips: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    // In-memory gate (no git): does another non-trunk branch sit at `branch`'s
+    // tip? If not, the tip is unique and inference is reliable — skip the record.
+    let shares_tip = tips.values().any(|names| {
+        names.iter().any(|n| n == branch)
+            && names.iter().any(|n| n != branch && n != default)
+    });
+    if !shares_tip {
+        return None;
+    }
     let key = format!("branch.{branch}.tonicbase");
     let parent = git_capture(Some(repo.cwd()), &["config", &key]).ok()?;
     if parent.is_empty() || parent == branch {

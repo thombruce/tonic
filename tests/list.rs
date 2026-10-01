@@ -263,6 +263,19 @@ fn empty_branch_off_a_descendant_keeps_its_parent() {
 }
 
 #[test]
+fn record_is_ignored_for_a_unique_tip_branch() {
+    let s = Scratch::new();
+    linear_stack(&s); // main → a → b, each with its own commit (unique tips)
+    // plant a WRONG record on b claiming it sits directly on main (skipping a)
+    s.git(&["config", "branch.b.tonicbase", "main"]);
+    let out = stdout(&s.tonic(&["list"]));
+    // b's tip is unique, so inference is authoritative and the record is not even
+    // consulted — a is kept. (Guards against a stale record overriding a correct
+    // inferred chain, e.g. after a re-parenting rebase.)
+    assert!(out.contains("main → a → *b"), "inference must win for a unique-tip branch:\n{out}");
+}
+
+#[test]
 fn a_stale_tonicbase_record_is_ignored() {
     let s = Scratch::new();
     s.tonic(&["add", "solo"]);
