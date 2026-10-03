@@ -156,17 +156,15 @@ bottom — so you can see what you're navigating:
 
 ```console
 $ tonic stack
-▸ feature-c ●
-  feature-b ●
-  feature-a ●
-  main ●
+▸ feature-c
+  feature-b
+  feature-a
+  main
 ```
 
-The current branch is marked `▸`; a branch with its own worktree is flagged `●`
-(a lateral `cd` target — the rest are reached by an in-place checkout). The climb
-follows single children; where a branch forks, the view notes the children rather
-than guessing a path. Unlike `list` (one row per *worktree*, flat), this is one
-row per *branch* in your stack.
+The current branch is marked `▸`. The climb follows single children; where a
+branch forks, the view notes the children rather than guessing a path. Unlike
+`list` (one row per *worktree*, flat), this is one row per *branch* in your stack.
 
 A step goes to the target branch whichever way applies — if the branch **has a
 worktree**, tonic `cd`s there (needs [shell integration](#shell-integration-optional));

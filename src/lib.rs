@@ -943,10 +943,9 @@ fn status_cell(v: &WorktreeView, verbose: bool) -> String {
 /// tip at top, trunk at bottom — rather than `list`'s flat per-worktree view.
 /// Shows what `up`/`down`/`top`/`bottom` move along. Reuses the same inference
 /// (record-aware `lineage_cached` for ancestors, `direct_children` for the climb)
-/// — no new source of truth. The current branch is marked `▸`; a branch that has
-/// its own worktree is flagged `●` (a lateral `cd` target vs an in-place
-/// checkout). The climb follows single children; a fork stops it with a note
-/// naming the children (as `up`/`top` do).
+/// — no new source of truth. The current branch is marked `▸`. The climb follows
+/// single children; a fork stops it with a note naming the children (as `up`/`top`
+/// do). (A per-branch has-a-worktree flag is deferred — see #89.)
 pub fn stack() -> Result<()> {
     let repo = Repo::discover()?;
     if repo.root.is_none() {
@@ -1007,13 +1006,7 @@ pub fn stack() -> Result<()> {
         } else {
             b.clone()
         };
-        // `●` flags a branch with its own worktree (a lateral cd target).
-        let wtflag = if wt.contains(b.as_str()) {
-            format!(" {}", "●".if_supports_color(Stream::Stdout, |t| t.dimmed()))
-        } else {
-            String::new()
-        };
-        println!("{marker} {name}{wtflag}");
+        println!("{marker} {name}");
     }
     Ok(())
 }
