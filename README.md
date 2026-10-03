@@ -59,6 +59,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
 tonic list [-v|--porcelain|--json]  # list worktrees (alias: ls; -v: full breakdown; --porcelain/--json: machine-readable)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
+tonic stack                    # show the current worktree's stack (tip at top, trunk at bottom)
 tonic up / down                # move one branch up (toward the tip) / down (toward the trunk) the stack
 tonic top / bottom             # jump to the tip / base of the stack
 tonic rm  <branch> [-f] [-d]   # remove a worktree (alias: remove; -f: force, -d: also delete branch; empty branches auto-cleaned)
@@ -149,6 +150,21 @@ added over time, so parse by key, not position.
 lineage `list` shows (no stored state). A stack is a column: `up`/`top` climb
 toward the tip (a child, newer work), `down`/`bottom` descend toward the trunk
 (the parent).
+
+`tonic stack` shows that column for the current worktree — tip at top, trunk at
+bottom — so you can see what you're navigating:
+
+```console
+$ tonic stack
+▸ feature-c
+  feature-b
+  feature-a
+  main
+```
+
+The current branch is marked `▸`. The climb follows single children; where a
+branch forks, the view notes the children rather than guessing a path. Unlike
+`list` (one row per *worktree*, flat), this is one row per *branch* in your stack.
 
 A step goes to the target branch whichever way applies — if the branch **has a
 worktree**, tonic `cd`s there (needs [shell integration](#shell-integration-optional));
