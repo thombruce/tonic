@@ -95,6 +95,10 @@ including one stacked on another branch), it's deleted too, since nothing is los
 A branch that carries its own commits is always kept; use `-d` to delete it
 explicitly.
 
+When you `rm` the worktree you're standing in, tonic cd's you out of the doomed
+directory — to the **parent worktree** if the removed branch was stacked on one
+(you drop back a level down the stack), otherwise to the main worktree.
+
 Worktrees are **sibling directories**, so `list` stays flat. Each row leads with
 the **worktree directory** (relative to where they live, not a long absolute
 path), then its branch shown inside its inferred lineage. The row's own branch is
