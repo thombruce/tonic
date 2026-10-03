@@ -18,10 +18,13 @@ use tempfile::TempDir;
 pub struct Scratch {
     /// Kept so the tempdir isn't dropped for the test's lifetime.
     _tmp: TempDir,
-    /// Parent of the repo — where sibling worktrees land.
+    /// Parent of the repo — where sibling worktrees land (normal repos).
     root: PathBuf,
-    /// The main working tree.
+    /// The main working tree (normal), or the `main/` worktree (bare).
     pub repo: PathBuf,
+    /// The bare dir, for a bare repo (`None` for a normal one). Worktrees land
+    /// inside it (tonic's bare layout: base = the bare dir, template `{branch}`).
+    bare_dir: Option<PathBuf>,
 }
 
 impl Scratch {
@@ -31,12 +34,46 @@ impl Scratch {
         let root = tmp.path().to_path_buf();
         let repo = root.join("repo");
         std::fs::create_dir(&repo).unwrap();
-        let s = Scratch { _tmp: tmp, root, repo };
+        let s = Scratch { _tmp: tmp, root, repo, bare_dir: None };
         s.git(&["init", "-q", "-b", "main"]);
         s.git(&["config", "user.email", "t@t.co"]);
         s.git(&["config", "user.name", "t"]);
         s.commit_in(&s.repo, "m0");
         s
+    }
+
+    /// A fresh **bare** repo (`barerepo.git`) on `main` with one commit and a
+    /// `main/` worktree inside it. `repo` is that `main/` worktree; `bare_dir()`
+    /// is the bare dir itself (run tonic there to exercise bare-dir invocation).
+    /// Seeded by cloning a throwaway normal repo `--bare`, then detaching its
+    /// origin so the bare repo stands alone (trunk resolves via `main` existing).
+    pub fn bare() -> Self {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let bare = root.join("barerepo.git");
+        // partially-built Scratch so the git_in/commit_in helpers are usable
+        let mut s = Scratch { _tmp: tmp, root: root.clone(), repo: root.clone(), bare_dir: None };
+        // seed a normal repo with one commit, then bare-clone it
+        let seed = root.join("seed");
+        std::fs::create_dir(&seed).unwrap();
+        s.git_in(&seed, &["init", "-q", "-b", "main"]);
+        s.git_in(&seed, &["config", "user.email", "t@t.co"]);
+        s.git_in(&seed, &["config", "user.name", "t"]);
+        s.commit_in(&seed, "m0");
+        s.git_in(&root, &["clone", "-q", "--bare", "seed", "barerepo.git"]);
+        s.git_in(&bare, &["remote", "remove", "origin"]); // stand alone
+        s.git_in(&bare, &["config", "user.email", "t@t.co"]);
+        s.git_in(&bare, &["config", "user.name", "t"]);
+        // the main worktree, inside the bare dir
+        s.git_in(&bare, &["worktree", "add", "-q", "main", "main"]);
+        s.repo = bare.join("main");
+        s.bare_dir = Some(bare);
+        s
+    }
+
+    /// The bare dir (panics if this isn't a bare `Scratch`).
+    pub fn bare_dir(&self) -> PathBuf {
+        self.bare_dir.clone().expect("not a bare Scratch")
     }
 
     /// Run git in the main worktree, asserting success; returns trimmed stdout.
@@ -93,10 +130,15 @@ impl Scratch {
         self.root.join(name)
     }
 
-    /// The path of the worktree `tonic add <branch>` creates (default template
-    /// `{repo}-{branch}`, `/` flattened to `-`), a sibling of the main worktree.
+    /// The path of the worktree `tonic add <branch>` creates, `/` flattened to
+    /// `-`: a `{repo}-{branch}` sibling for a normal repo, or `{branch}` inside the
+    /// bare dir for a bare repo (tonic's bare layout).
     pub fn wt(&self, branch: &str) -> PathBuf {
-        self.root.join(format!("repo-{}", branch.replace('/', "-")))
+        let flat = branch.replace('/', "-");
+        match &self.bare_dir {
+            Some(bare) => bare.join(flat),
+            None => self.root.join(format!("repo-{flat}")),
+        }
     }
 }
 
