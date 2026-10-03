@@ -58,6 +58,8 @@ enum Cmd {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Show the current worktree's stack (tip at top, trunk at bottom)
+    Stack,
     /// Move one branch up the stack, toward the tip (a child)
     Up,
     /// Move one branch down the stack, toward the trunk (the parent)
@@ -103,6 +105,7 @@ fn main() -> anyhow::Result<()> {
             clap_complete::generate(shell, &mut cmd, "tonic", &mut std::io::stdout());
             Ok(())
         }
+        Cmd::Stack => tonic::stack(),
         Cmd::Up => tonic::up(),
         Cmd::Down => tonic::down(),
         Cmd::Top => tonic::top(),

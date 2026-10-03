@@ -939,6 +939,85 @@ fn status_cell(v: &WorktreeView, verbose: bool) -> String {
     }
 }
 
+/// `tonic stack` (#82): the current branch's stack as a vertical column —
+/// tip at top, trunk at bottom — rather than `list`'s flat per-worktree view.
+/// Shows what `up`/`down`/`top`/`bottom` move along. Reuses the same inference
+/// (record-aware `lineage_cached` for ancestors, `direct_children` for the climb)
+/// — no new source of truth. The current branch is marked `▸`; a branch that has
+/// its own worktree is flagged `●` (a lateral `cd` target vs an in-place
+/// checkout). The climb follows single children; a fork stops it with a note
+/// naming the children (as `up`/`top` do).
+pub fn stack() -> Result<()> {
+    let repo = Repo::discover()?;
+    if repo.root.is_none() {
+        bail!("stack view must run from inside a worktree");
+    }
+    let cfg = Config::load(&repo)?;
+    let current = current_branch(&repo)?;
+    let tips = branch_tips(&repo);
+    let default = default_branch(&repo, &cfg, &tips).ok_or_else(|| {
+        anyhow!("no trunk branch found — stack view needs main/master or a configured default_branch")
+    })?;
+    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+    let worktrees = parse_worktrees(&list);
+    let wt: HashSet<&str> =
+        worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
+    let mut memo: HashMap<String, Vec<String>> = HashMap::new();
+
+    // Spine trunk→tip: ancestors (incl. current) from the record-aware chain, then
+    // climb single children toward the tip; a fork halts the climb.
+    let mut spine = lineage_cached(&repo, &current, &tips, &default, &wt, &mut memo);
+    let mut cur = current.clone();
+    let mut fork: Option<Vec<String>> = None;
+    loop {
+        match direct_children(&repo, &cur, &default, &tips, &wt, &mut memo) {
+            Children::None => break,
+            Children::Immediate(kids) => match kids.split_first() {
+                Some((only, [])) => {
+                    spine.push(only.clone());
+                    cur = only.clone();
+                }
+                _ => {
+                    fork = Some(kids.clone());
+                    break;
+                }
+            },
+            Children::Many(n) => {
+                fork = Some(vec![format!("{n}+ branches")]);
+                break;
+            }
+        }
+    }
+
+    // Render tip (top) → trunk (bottom). The fork note, if any, sits above the tip.
+    if let Some(kids) = &fork {
+        let note = format!("  ⋔ forks into {}", kids.join(", "));
+        println!("{}", note.if_supports_color(Stream::Stdout, |t| t.dimmed()));
+    }
+    for b in spine.iter().rev() {
+        let is_current = *b == current;
+        let marker = if is_current {
+            format!("{}", "▸".if_supports_color(Stream::Stdout, |t| t.green()))
+        } else {
+            " ".to_string()
+        };
+        let name = if is_current {
+            let style = owo_colors::Style::new().green().bold();
+            format!("{}", b.if_supports_color(Stream::Stdout, |t| t.style(style)))
+        } else {
+            b.clone()
+        };
+        // `●` flags a branch with its own worktree (a lateral cd target).
+        let wtflag = if wt.contains(b.as_str()) {
+            format!(" {}", "●".if_supports_color(Stream::Stdout, |t| t.dimmed()))
+        } else {
+            String::new()
+        };
+        println!("{marker} {name}{wtflag}");
+    }
+    Ok(())
+}
+
 /// Machine-readable records, one per worktree, git-`--porcelain`-style: blank-line
 /// separated, `key value` lines, presence flags. Unknown keys can be added later
 /// without breaking positional parsers. Lossless — full names, absolute paths.
