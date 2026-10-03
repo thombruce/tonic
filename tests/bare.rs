@@ -84,6 +84,23 @@ fn bare_rm_auto_deletes_an_empty_branch_stacked_on_a_descendant() {
 }
 
 #[test]
+fn bare_rm_of_the_current_worktree_prints_an_escape_path() {
+    let s = Scratch::bare();
+    s.tonic(&["add", "feat"]);
+    s.commit_in(&s.wt("feat"), "fc"); // real work, so it isn't auto-deleted — focus on the escape
+    // remove feat from *inside* its own worktree: stdout must carry a path to cd
+    // out to, which for a bare repo is the main/ worktree (home_checkout's bare arm)
+    let out = s.tonic_in(&s.wt("feat"), &["rm", "feat", "-f"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let path = stdout(&out);
+    assert!(!path.trim().is_empty(), "no escape path printed for a removed-current worktree");
+    assert!(
+        path.trim().ends_with("main"),
+        "escape path should be the main/ worktree:\n{path}"
+    );
+}
+
+#[test]
 fn bare_cd_resolves_from_the_bare_dir() {
     let s = Scratch::bare();
     s.tonic(&["add", "feat"]);
