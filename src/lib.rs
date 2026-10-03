@@ -945,7 +945,7 @@ fn status_cell(v: &WorktreeView, verbose: bool) -> String {
 /// (record-aware `lineage_cached` for ancestors, `direct_children` for the climb)
 /// — no new source of truth. The current branch is marked `▸`. The climb follows
 /// single children; a fork stops it with a note naming the children (as `up`/`top`
-/// do). (A per-branch has-a-worktree flag is deferred — see #89.)
+/// do). (A per-branch has-a-worktree flag is deferred — see #90.)
 pub fn stack() -> Result<()> {
     let repo = Repo::discover()?;
     if repo.root.is_none() {
