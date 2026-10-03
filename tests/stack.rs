@@ -35,6 +35,24 @@ fn stack_lists_the_chain_tip_to_trunk() {
 }
 
 #[test]
+fn stack_climbs_above_a_mid_stack_branch() {
+    let s = Scratch::new();
+    s.tonic(&["add", "a"]);
+    s.commit_in(&s.wt("a"), "ac");
+    s.tonic_in(&s.wt("a"), &["add", "b"]);
+    s.commit_in(&s.wt("b"), "bc");
+    // run from a (mid-stack): the single child b stacked above must render above it
+    // (exercises the climb-toward-the-tip path, not just ancestors).
+    let out = stdout(&s.tonic_in(&s.wt("a"), &["stack"]));
+    assert!(row(&out, "b") < row(&out, "a"), "child should render above current:\n{out}");
+    assert!(row(&out, "a") < row(&out, "main"), "trunk should be at the bottom:\n{out}");
+    assert!(
+        out.lines().any(|l| l.contains('▸') && l.contains('a')),
+        "current branch a not marked:\n{out}"
+    );
+}
+
+#[test]
 fn stack_notes_a_fork() {
     let s = Scratch::new();
     s.tonic(&["add", "a"]);
