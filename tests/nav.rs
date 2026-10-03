@@ -27,6 +27,52 @@ fn head(s: &Scratch, dir: &std::path::Path) -> String {
 }
 
 #[test]
+fn down_from_an_empty_branch_uses_its_recorded_parent() {
+    let s = Scratch::new();
+    stack_ab(&s); // main → a → b
+    s.tonic_in(&s.wt("b"), &["add", "foo"]); // foo off b, no commit → empty, tip == b's
+    // down must reach b (foo's recorded parent), not the grandparent a — nav uses
+    // the same record-aware lineage `list` does (#83).
+    let out = s.tonic_in(&s.wt("foo"), &["down"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).trim().ends_with("repo-b"),
+        "down from an empty branch should reach its parent b:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn bottom_from_an_empty_branch_reaches_the_base() {
+    let s = Scratch::new();
+    stack_ab(&s);
+    s.tonic_in(&s.wt("b"), &["add", "foo"]); // foo off b, empty
+    // the base of the stack is a (the branch on the trunk), via the recorded chain
+    let out = s.tonic_in(&s.wt("foo"), &["bottom"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).trim().ends_with("repo-a"),
+        "bottom from an empty branch should reach the base a:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn up_reaches_an_empty_child() {
+    let s = Scratch::new();
+    stack_ab(&s);
+    s.tonic_in(&s.wt("b"), &["add", "foo"]); // foo off b, empty child of b
+    // the child side already routes through lineage_cached; guard it stays so
+    let out = s.tonic_in(&s.wt("b"), &["up"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).trim().ends_with("repo-foo"),
+        "up from b should reach its empty child foo:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
 fn down_steps_to_parent_worktree() {
     let s = Scratch::new();
     stack_ab(&s);

@@ -1511,7 +1511,11 @@ fn parent_of(
     default: &str,
     wt: &HashSet<&str>,
 ) -> Result<NavStep> {
-    let chain = lineage(repo, current, tips, default, wt);
+    // lineage_cached (not raw lineage) so nav honours the `tonicbase` record and
+    // agrees with `list`: an empty branch's parent is its recorded base, not the
+    // grandparent the commit walk would land on (#83).
+    let mut memo: HashMap<String, Vec<String>> = HashMap::new();
+    let chain = lineage_cached(repo, current, tips, default, wt, &mut memo);
     // chain is root-anchored with `current` last; its predecessor is the parent.
     match chain.iter().rev().nth(1) {
         Some(parent) => Ok(NavStep::Go(parent.clone())),
@@ -1528,7 +1532,10 @@ fn base_of(
     default: &str,
     wt: &HashSet<&str>,
 ) -> Result<NavStep> {
-    let chain = lineage(repo, current, tips, default, wt);
+    // lineage_cached so the base is computed from the same record-aware chain
+    // `list` and `down` use (#83).
+    let mut memo: HashMap<String, Vec<String>> = HashMap::new();
+    let chain = lineage_cached(repo, current, tips, default, wt, &mut memo);
     match chain.get(1) {
         None => Ok(NavStep::Stay("already at the bottom of the stack (on the trunk)")),
         Some(base) if base == current => Ok(NavStep::Stay("already at the bottom of the stack")),
