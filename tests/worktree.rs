@@ -162,6 +162,24 @@ fn cd_prints_the_worktree_path() {
 }
 
 #[test]
+fn rm_current_returns_to_the_parent_worktree() {
+    let s = Scratch::new();
+    s.tonic(&["add", "a"]);
+    s.commit_in(&s.wt("a"), "ac");
+    s.tonic_in(&s.wt("a"), &["add", "b"]);
+    s.commit_in(&s.wt("b"), "bc");
+    // remove b from inside its own worktree: b is stacked on a, which has its own
+    // worktree, so the return path is a's worktree — not main (#42).
+    let out = s.tonic_in(&s.wt("b"), &["rm", "b", "-f"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).trim().ends_with("repo-a"),
+        "should drop back to the parent worktree a, not main:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
 fn rm_of_the_current_worktree_prints_a_fallback_path() {
     let s = Scratch::new();
     s.tonic(&["add", "foo"]);

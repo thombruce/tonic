@@ -603,6 +603,11 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         .zip(std::fs::canonicalize(&path).ok())
         .is_some_and(|(here, target)| here == target);
 
+    // Where to cd after removing the current worktree — the parent worktree if
+    // stacked, else the trunk (#42). Computed before removal (cwd still alive).
+    let return_path =
+        removing_current.then(|| current_return_path(&repo, &cfg, wt_branch.as_deref()));
+
     // pre_remove is fatal: nothing is removed yet, so a failing hook blocks rm.
     run_hooks(&cfg, "pre_remove", &repo, branch, &path, true)?;
 
@@ -640,11 +645,11 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         "✓".if_supports_color(Stream::Stderr, |t| t.green()),
         path.display()
     );
-    // If we just deleted the worktree we were in, print a safe fallback path on
-    // stdout so the shell integration can `cd` there instead of leaving the
-    // shell stranded in a deleted directory (#29).
-    if removing_current {
-        println!("{}", home_checkout(&repo, &cfg).display());
+    // If we just deleted the worktree we were in, print a path on stdout so the
+    // shell integration can `cd` there instead of being stranded in a deleted dir
+    // (#29) — the parent worktree if stacked, else the trunk (#42).
+    if let Some(p) = return_path {
+        println!("{}", p.display());
     }
     Ok(())
 }
@@ -669,6 +674,36 @@ fn home_checkout(repo: &Repo, cfg: &Config) -> PathBuf {
         }
     }
     repo.main.clone()
+}
+
+/// Where to land after removing the *current* worktree (#42). If the removed
+/// branch is stacked on a parent branch that has **its own worktree**, return
+/// there — you were working up the stack, so drop back one level rather than all
+/// the way to the trunk. Otherwise fall back to the trunk worktree
+/// (`home_checkout`, #35). The parent is the predecessor in the record-aware
+/// lineage chain (so an empty branch's parent is right too, #78/#83). Must be
+/// called **before** removal — `lineage`/`branch_tips` read `repo.cwd()`, which is
+/// the worktree about to vanish.
+fn current_return_path(repo: &Repo, cfg: &Config, branch: Option<&str>) -> PathBuf {
+    if let Some(b) = branch {
+        let tips = branch_tips(repo);
+        if let Some(default) = default_branch(repo, cfg, &tips) {
+            let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])
+                .unwrap_or_default();
+            let worktrees = parse_worktrees(&list);
+            let wt: HashSet<&str> =
+                worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
+            let mut memo: HashMap<String, Vec<String>> = HashMap::new();
+            let chain = lineage_cached(repo, b, &tips, &default, &wt, &mut memo);
+            // predecessor of `b` in its root-anchored chain = its parent branch
+            if let Some(parent) = chain.iter().rev().nth(1) {
+                if let Some(p) = parse_worktree(&list, parent) {
+                    return p; // parent has a worktree → drop back one level
+                }
+            }
+        }
+    }
+    home_checkout(repo, cfg)
 }
 
 /// Whether `branch` is safe to auto-delete after removing its worktree (#52):
