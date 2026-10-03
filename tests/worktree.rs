@@ -180,6 +180,25 @@ fn rm_current_returns_to_the_parent_worktree() {
 }
 
 #[test]
+fn rm_current_falls_back_to_trunk_when_parent_has_no_worktree() {
+    let s = Scratch::new();
+    s.tonic(&["add", "a"]);
+    s.commit_in(&s.wt("a"), "ac");
+    s.tonic_in(&s.wt("a"), &["add", "b"]);
+    s.commit_in(&s.wt("b"), "bc");
+    // remove a's worktree but keep branch a — b's parent now exists without a worktree
+    s.git(&["worktree", "remove", s.wt("a").to_str().unwrap()]);
+    // rm b from inside: no parent worktree to drop back to → fall back to the trunk
+    let out = s.tonic_in(&s.wt("b"), &["rm", "b", "-f"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).trim().ends_with("/repo"),
+        "should fall back to the trunk worktree when the parent has none:\n{}",
+        stdout(&out)
+    );
+}
+
+#[test]
 fn rm_of_the_current_worktree_prints_a_fallback_path() {
     let s = Scratch::new();
     s.tonic(&["add", "foo"]);

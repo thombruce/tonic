@@ -697,8 +697,9 @@ fn current_return_path(repo: &Repo, cfg: &Config, branch: Option<&str>) -> PathB
             let chain = lineage_cached(repo, b, &tips, &default, &wt, &mut memo);
             // predecessor of `b` in its root-anchored chain = its parent branch
             if let Some(parent) = chain.iter().rev().nth(1) {
-                if let Some(p) = parse_worktree(&list, parent) {
-                    return p; // parent has a worktree → drop back one level
+                // reuse the already-parsed worktrees rather than re-parsing `list`
+                if let Some(w) = worktrees.iter().find(|w| !w.bare && &w.label == parent) {
+                    return w.path.clone(); // parent has a worktree → drop back one level
                 }
             }
         }
