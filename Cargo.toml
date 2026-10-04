@@ -3,7 +3,7 @@
 # crate). The installed binary is still "tonic" — see [[bin]] below.
 name = "git-tonic"
 version = "0.3.0"
-edition = "2021"
+edition = "2024"
 description = "A git worktree companion"
 license = "MIT"
 repository = "https://github.com/thombruce/tonic"

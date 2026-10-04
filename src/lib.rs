@@ -377,10 +377,10 @@ fn short_path(path: &Path, base: &Path) -> String {
         }
         return rel.display().to_string();
     }
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(rel) = path.strip_prefix(&home) {
-            return format!("~/{}", rel.display());
-        }
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rel) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", rel.display());
     }
     path.display().to_string()
 }
@@ -935,11 +935,11 @@ fn lineage_cell(v: &WorktreeView) -> String {
     let dim = |s: String| format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()));
     let mut cell = String::new();
     // Ancestors above the trunk (drop the trunk itself for a bare base branch).
-    if v.lineage.len() >= 3 {
-        if let Some((_branch, ancestors)) = v.lineage.split_last() {
-            for anc in ancestors {
-                cell.push_str(&dim(format!("{anc} → ")));
-            }
+    if v.lineage.len() >= 3
+        && let Some((_branch, ancestors)) = v.lineage.split_last()
+    {
+        for anc in ancestors {
+            cell.push_str(&dim(format!("{anc} → ")));
         }
     }
     cell.push_str(&format!("{}", "*".if_supports_color(Stream::Stdout, |t| t.green())));
@@ -1147,25 +1147,26 @@ fn default_branch(repo: &Repo, cfg: &Config, tips: &HashMap<String, Vec<String>>
     let names: HashSet<&str> = tips.values().flatten().map(String::as_str).collect();
     let exists = |b: &str| names.contains(b);
 
-    if let Some(d) = cfg.default_branch.as_deref() {
-        if exists(d) {
-            return Some(d.to_string());
-        }
+    if let Some(d) = cfg.default_branch.as_deref()
+        && exists(d)
+    {
+        return Some(d.to_string());
     }
-    if let Some(d) = remote_head_branch(repo) {
-        if exists(d.as_str()) {
-            return Some(d);
-        }
+    if let Some(d) = remote_head_branch(repo)
+        && exists(d.as_str())
+    {
+        return Some(d);
     }
     for d in ["main", "master"] {
         if exists(d) {
             return Some(d.to_string());
         }
     }
-    if let Ok(d) = git_capture(Some(repo.cwd()), &["config", "init.defaultBranch"]) {
-        if !d.is_empty() && exists(d.as_str()) {
-            return Some(d);
-        }
+    if let Ok(d) = git_capture(Some(repo.cwd()), &["config", "init.defaultBranch"])
+        && !d.is_empty()
+        && exists(d.as_str())
+    {
+        return Some(d);
     }
     None
 }
@@ -1233,10 +1234,11 @@ fn lineage(
         // real one). They're one stack level: take a single representative,
         // preferring one with a worktree — the empty twin usually has none.
         let pick = names.iter().find(|n| wt.contains(n.as_str())).or_else(|| names.first());
-        if let Some(name) = pick {
-            if name != branch && !chain.iter().any(|c| c == name) {
-                chain.push(name.clone());
-            }
+        if let Some(name) = pick
+            && name != branch
+            && !chain.iter().any(|c| c == name)
+        {
+            chain.push(name.clone());
         }
     }
     chain.push(default.to_string());
@@ -1496,15 +1498,15 @@ fn format_dirty(st: &Status, verbose: bool) -> String {
 /// the dirty color, since ahead/behind isn't dirtiness).
 fn format_upstream(ahead: Option<usize>, behind: Option<usize>) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(a) = ahead {
-        if a > 0 {
-            parts.push(format!("↑{a}"));
-        }
+    if let Some(a) = ahead
+        && a > 0
+    {
+        parts.push(format!("↑{a}"));
     }
-    if let Some(b) = behind {
-        if b > 0 {
-            parts.push(format!("↓{b}"));
-        }
+    if let Some(b) = behind
+        && b > 0
+    {
+        parts.push(format!("↓{b}"));
     }
     parts.join(" ")
 }
