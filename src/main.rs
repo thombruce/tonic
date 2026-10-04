@@ -84,10 +84,24 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
-        Cmd::Add { branch, new_branch, base, remote, fetch } => {
-            tonic::add(&branch, new_branch, base.as_deref(), remote.as_deref(), fetch)
-        }
-        Cmd::List { verbose, porcelain, json } => {
+        Cmd::Add {
+            branch,
+            new_branch,
+            base,
+            remote,
+            fetch,
+        } => tonic::add(
+            &branch,
+            new_branch,
+            base.as_deref(),
+            remote.as_deref(),
+            fetch,
+        ),
+        Cmd::List {
+            verbose,
+            porcelain,
+            json,
+        } => {
             let format = if porcelain {
                 tonic::ListFormat::Porcelain
             } else if json {
@@ -110,6 +124,10 @@ fn main() -> anyhow::Result<()> {
         Cmd::Down => tonic::down(),
         Cmd::Top => tonic::top(),
         Cmd::Bottom => tonic::bottom(),
-        Cmd::Rm { branch, force, delete_branch } => tonic::rm(&branch, force, delete_branch),
+        Cmd::Rm {
+            branch,
+            force,
+            delete_branch,
+        } => tonic::rm(&branch, force, delete_branch),
     }
 }

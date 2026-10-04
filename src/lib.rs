@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use owo_colors::{OwoColorize, Stream};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -72,8 +72,8 @@ impl Config {
             if path.exists() {
                 let text = std::fs::read_to_string(&path)
                     .with_context(|| format!("reading {}", path.display()))?;
-                let next: Config = toml::from_str(&text)
-                    .with_context(|| format!("parsing {}", path.display()))?;
+                let next: Config =
+                    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
                 cfg.merge(next);
             }
         }
@@ -177,18 +177,27 @@ impl Repo {
             .map(|n| {
                 let n = n.to_string_lossy();
                 // strip the bare dir's ".git" suffix (barerepo.git -> barerepo)
-                if bare { n.trim_end_matches(".git").to_string() } else { n.into_owned() }
+                if bare {
+                    n.trim_end_matches(".git").to_string()
+                } else {
+                    n.into_owned()
+                }
             })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "repo".into());
-        Ok(Repo { root, git_dir, main, name, bare })
+        Ok(Repo {
+            root,
+            git_dir,
+            main,
+            name,
+            bare,
+        })
     }
 
     /// Directory to run git subcommands from.
     fn cwd(&self) -> &Path {
         self.root.as_deref().unwrap_or(&self.git_dir)
     }
-
 }
 
 /// Directory to source `.worktreeinclude` entries from. For a normal repo (or
@@ -279,7 +288,10 @@ fn resolve_new_base(
     }
     // Worktree: HEAD is the current checkout — record it as the parent when it's a
     // named branch; `symbolic-ref --short` fails (and we warn) when detached.
-    match git_capture(Some(repo.cwd()), &["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+    match git_capture(
+        Some(repo.cwd()),
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+    ) {
         Ok(b) if !b.is_empty() => (None, Some(b)),
         _ => {
             let head = git_capture(Some(repo.cwd()), &["rev-parse", "--short", "HEAD"])
@@ -390,7 +402,11 @@ fn short_path(path: &Path, base: &Path) -> String {
 /// `worktree_base`. `/` in the branch name is flattened to `-` so the worktree
 /// is one directory, not nested subdirs (git/hooks still get the real name).
 fn worktree_path_for(repo: &Repo, cfg: &Config, branch: &str) -> PathBuf {
-    let default_template = if repo.bare { "{branch}" } else { "{repo}-{branch}" };
+    let default_template = if repo.bare {
+        "{branch}"
+    } else {
+        "{repo}-{branch}"
+    };
     let template = cfg.worktree_path.as_deref().unwrap_or(default_template);
     let path_branch = branch.replace('/', "-");
     let rendered = render(template, &[("repo", &repo.name), ("branch", &path_branch)]);
@@ -420,7 +436,10 @@ fn resolve_worktree(repo: &Repo, cfg: &Config, name: &str) -> Result<PathBuf> {
     // base like macOS /tmp -> /private/tmp doesn't cause a spurious miss.
     let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let expected = canon(&worktree_path_for(repo, cfg, name));
-    if let Some(w) = worktrees.iter().find(|w| !w.bare && canon(&w.path) == expected) {
+    if let Some(w) = worktrees
+        .iter()
+        .find(|w| !w.bare && canon(&w.path) == expected)
+    {
         return Ok(w.path.clone());
     }
     // 3. the worktree's directory basename (handles template drift / rm by dir).
@@ -462,10 +481,14 @@ pub fn add(
     // say so rather than silently ignoring the user's explicit choice.
     if remote.is_some() {
         if force_new {
-            bail!("--remote can't be combined with -b/--base, which create a new branch rather than track a remote");
+            bail!(
+                "--remote can't be combined with -b/--base, which create a new branch rather than track a remote"
+            );
         }
         if local {
-            bail!("branch '{branch}' already exists locally; --remote only applies when creating a new branch from a remote");
+            bail!(
+                "branch '{branch}' already exists locally; --remote only applies when creating a new branch from a remote"
+            );
         }
     }
 
@@ -473,7 +496,9 @@ pub fn add(
     // catch both cases with a clear message instead of git's raw error.
     if local {
         if force_new {
-            bail!("branch '{branch}' already exists\n       omit -b/--base to check it out, or choose a new name");
+            bail!(
+                "branch '{branch}' already exists\n       omit -b/--base to check it out, or choose a new name"
+            );
         }
         // #16: a branch can only be checked out in one worktree.
         let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
@@ -521,7 +546,12 @@ pub fn add(
         }
         match choose_remote(&repo, branch, remote)? {
             Some(r) => {
-                args.extend(["--track".into(), "-b".into(), branch.into(), path_str.clone()]);
+                args.extend([
+                    "--track".into(),
+                    "-b".into(),
+                    branch.into(),
+                    path_str.clone(),
+                ]);
                 args.push(format!("{r}/{branch}"));
                 tracking = Some(format!("{r}/{branch}"));
             }
@@ -591,7 +621,9 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
     // worktree — dead once we remove the current one. Computing it now (cwd alive)
     // keeps the clean-up working from inside the worktree being removed (#52/#78).
     let auto_delete_empty = !delete_branch
-        && wt_branch.as_deref().is_some_and(|b| is_empty_branch(&repo, &cfg, b));
+        && wt_branch
+            .as_deref()
+            .is_some_and(|b| is_empty_branch(&repo, &cfg, b));
 
     // Are we standing in the worktree we're about to remove? (compare the
     // invoking working tree to the target). Computed before removal, since the
@@ -691,8 +723,11 @@ fn current_return_path(repo: &Repo, cfg: &Config, branch: Option<&str>) -> PathB
             let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])
                 .unwrap_or_default();
             let worktrees = parse_worktrees(&list);
-            let wt: HashSet<&str> =
-                worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
+            let wt: HashSet<&str> = worktrees
+                .iter()
+                .filter(|w| !w.bare)
+                .map(|w| w.label.as_str())
+                .collect();
             let mut memo: HashMap<String, Vec<String>> = HashMap::new();
             let chain = lineage_cached(repo, b, &tips, &default, &wt, &mut memo);
             // predecessor of `b` in its root-anchored chain = its parent branch
@@ -724,7 +759,9 @@ fn current_return_path(repo: &Repo, cfg: &Config, branch: Option<&str>) -> PathB
 /// on that base and survives independently.
 fn is_empty_branch(repo: &Repo, cfg: &Config, branch: &str) -> bool {
     let tips = branch_tips(repo);
-    let Some(default) = default_branch(repo, cfg, &tips) else { return false };
+    let Some(default) = default_branch(repo, cfg, &tips) else {
+        return false;
+    };
     if branch == default {
         return false;
     }
@@ -812,14 +849,20 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
     let out = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
     let worktrees = parse_worktrees(&out);
     // The current worktree is the one whose path is the invoking working tree.
-    let current = repo.root.as_deref().and_then(|r| std::fs::canonicalize(r).ok());
+    let current = repo
+        .root
+        .as_deref()
+        .and_then(|r| std::fs::canonicalize(r).ok());
     let tips = branch_tips(repo);
     let default = default_branch(repo, cfg, &tips);
 
     // Pass 1: infer each branch-bearing worktree's lineage and direct children
     // from the commit graph. Memoized so a descendant isn't re-walked per base.
-    let wt: HashSet<&str> =
-        worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
+    let wt: HashSet<&str> = worktrees
+        .iter()
+        .filter(|w| !w.bare)
+        .map(|w| w.label.as_str())
+        .collect();
     let mut memo: HashMap<String, Vec<String>> = HashMap::new();
     let mut children: HashMap<String, Children> = HashMap::new();
     for w in worktrees.iter().filter(|w| !w.bare) {
@@ -847,8 +890,16 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
         // so a plain base branch still reports its parent for machine readers);
         // the human renderer applies its own "is this a stack" display gate.
         let empty = Vec::new();
-        let chain = if w.bare { &empty } else { memo.get(&w.label).unwrap_or(&empty) };
-        let lineage = if chain.len() >= 2 { chain.clone() } else { Vec::new() };
+        let chain = if w.bare {
+            &empty
+        } else {
+            memo.get(&w.label).unwrap_or(&empty)
+        };
+        let lineage = if chain.len() >= 2 {
+            chain.clone()
+        } else {
+            Vec::new()
+        };
         let (kid_names, overflow) = match children.get(&w.label).unwrap_or(&Children::None) {
             Children::None => (Vec::new(), None),
             Children::Immediate(names) => (names.clone(), None),
@@ -859,7 +910,11 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
             (Status::default(), None, None)
         } else {
             let ab = ahead_behind(&w.path);
-            (worktree_status(&w.path), ab.as_ref().map(|a| a.ahead), ab.as_ref().map(|a| a.behind))
+            (
+                worktree_status(&w.path),
+                ab.as_ref().map(|a| a.ahead),
+                ab.as_ref().map(|a| a.behind),
+            )
         };
 
         views.push(WorktreeView {
@@ -912,7 +967,10 @@ fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
         // Dir leads, so it carries the current-worktree emphasis (green + bold).
         let dir_col = if v.current {
             let style = owo_colors::Style::new().green().bold();
-            format!("{}", dir_pad.if_supports_color(Stream::Stdout, |t| t.style(style)))
+            format!(
+                "{}",
+                dir_pad.if_supports_color(Stream::Stdout, |t| t.style(style))
+            )
         } else {
             dir_pad
         };
@@ -930,7 +988,10 @@ fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
 /// HEAD has no branch, so it reads `(detached)`.
 fn lineage_cell(v: &WorktreeView) -> String {
     let Some(name) = &v.branch else {
-        return format!("{}", "(detached)".if_supports_color(Stream::Stdout, |t| t.dimmed()));
+        return format!(
+            "{}",
+            "(detached)".if_supports_color(Stream::Stdout, |t| t.dimmed())
+        );
     };
     let dim = |s: String| format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()));
     let mut cell = String::new();
@@ -942,8 +1003,14 @@ fn lineage_cell(v: &WorktreeView) -> String {
             cell.push_str(&dim(format!("{anc} → ")));
         }
     }
-    cell.push_str(&format!("{}", "*".if_supports_color(Stream::Stdout, |t| t.green())));
-    cell.push_str(&format!("{}", name.if_supports_color(Stream::Stdout, |t| t.bold())));
+    cell.push_str(&format!(
+        "{}",
+        "*".if_supports_color(Stream::Stdout, |t| t.green())
+    ));
+    cell.push_str(&format!(
+        "{}",
+        name.if_supports_color(Stream::Stdout, |t| t.bold())
+    ));
     if let Some(n) = v.children_overflow {
         // `+` marks an unfiltered descendant count (cap hit).
         cell.push_str(&dim(format!(" → [{n}+]")));
@@ -963,10 +1030,16 @@ fn status_cell(v: &WorktreeView, verbose: bool) -> String {
     let upstream = format_upstream(v.ahead, v.behind);
     let mut seg: Vec<String> = Vec::new();
     if !dirty.is_empty() {
-        seg.push(format!("{}", dirty.if_supports_color(Stream::Stdout, |t| t.yellow())));
+        seg.push(format!(
+            "{}",
+            dirty.if_supports_color(Stream::Stdout, |t| t.yellow())
+        ));
     }
     if !upstream.is_empty() {
-        seg.push(format!("{}", upstream.if_supports_color(Stream::Stdout, |t| t.cyan())));
+        seg.push(format!(
+            "{}",
+            upstream.if_supports_color(Stream::Stdout, |t| t.cyan())
+        ));
     }
     if seg.is_empty() {
         String::new()
@@ -991,12 +1064,17 @@ pub fn stack() -> Result<()> {
     let current = current_branch(&repo)?;
     let tips = branch_tips(&repo);
     let default = default_branch(&repo, &cfg, &tips).ok_or_else(|| {
-        anyhow!("no trunk branch found — stack view needs main/master or a configured default_branch")
+        anyhow!(
+            "no trunk branch found — stack view needs main/master or a configured default_branch"
+        )
     })?;
     let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
     let worktrees = parse_worktrees(&list);
-    let wt: HashSet<&str> =
-        worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
+    let wt: HashSet<&str> = worktrees
+        .iter()
+        .filter(|w| !w.bare)
+        .map(|w| w.label.as_str())
+        .collect();
     let mut memo: HashMap<String, Vec<String>> = HashMap::new();
 
     // Spine trunk→tip: ancestors (incl. current) from the record-aware chain, then
@@ -1038,7 +1116,10 @@ pub fn stack() -> Result<()> {
         };
         let name = if is_current {
             let style = owo_colors::Style::new().green().bold();
-            format!("{}", b.if_supports_color(Stream::Stdout, |t| t.style(style)))
+            format!(
+                "{}",
+                b.if_supports_color(Stream::Stdout, |t| t.style(style))
+            )
         } else {
             b.clone()
         };
@@ -1095,13 +1176,19 @@ fn render_porcelain(views: &[WorktreeView]) {
 fn branch_tips(repo: &Repo) -> HashMap<String, Vec<String>> {
     let out = git_capture(
         Some(repo.cwd()),
-        &["for-each-ref", "--format=%(objectname) %(refname:short)", "refs/heads/"],
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname:short)",
+            "refs/heads/",
+        ],
     )
     .unwrap_or_default();
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for line in out.lines() {
         if let Some((sha, name)) = line.split_once(' ') {
-            map.entry(sha.to_string()).or_default().push(name.to_string());
+            map.entry(sha.to_string())
+                .or_default()
+                .push(name.to_string());
         }
     }
     map
@@ -1128,10 +1215,13 @@ fn trunk_candidates(cfg: &Config) -> Vec<&str> {
 /// unset (no remote, or `origin/HEAD` never recorded). Set by `git clone` and
 /// `git remote set-head`. Only `origin` is consulted (the conventional default).
 fn remote_head_branch(repo: &Repo) -> Option<String> {
-    let full =
-        git_capture(Some(repo.cwd()), &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
-            .ok()?;
-    full.strip_prefix("refs/remotes/origin/").map(str::to_string)
+    let full = git_capture(
+        Some(repo.cwd()),
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )
+    .ok()?;
+    full.strip_prefix("refs/remotes/origin/")
+        .map(str::to_string)
 }
 
 /// The repo's trunk among the local branches, resolved in order and requiring
@@ -1143,7 +1233,11 @@ fn remote_head_branch(repo: &Repo) -> Option<String> {
 ///   3. `main`, then `master`
 ///   4. `init.defaultBranch` — a weak, global hint; last resort, only when the
 ///      conventional names are absent
-fn default_branch(repo: &Repo, cfg: &Config, tips: &HashMap<String, Vec<String>>) -> Option<String> {
+fn default_branch(
+    repo: &Repo,
+    cfg: &Config,
+    tips: &HashMap<String, Vec<String>>,
+) -> Option<String> {
     let names: HashSet<&str> = tips.values().flatten().map(String::as_str).collect();
     let exists = |b: &str| names.contains(b);
 
@@ -1212,7 +1306,12 @@ fn lineage(
     }
     let revs = git_capture(
         Some(repo.cwd()),
-        &["rev-list", "--first-parent", "--boundary", &format!("{default}..{branch}")],
+        &[
+            "rev-list",
+            "--first-parent",
+            "--boundary",
+            &format!("{default}..{branch}"),
+        ],
     )
     .unwrap_or_default();
     let mut chain = vec![branch.to_string()];
@@ -1233,7 +1332,10 @@ fn lineage(
         // Several branches can share this commit (e.g. an empty branch twinning a
         // real one). They're one stack level: take a single representative,
         // preferring one with a worktree — the empty twin usually has none.
-        let pick = names.iter().find(|n| wt.contains(n.as_str())).or_else(|| names.first());
+        let pick = names
+            .iter()
+            .find(|n| wt.contains(n.as_str()))
+            .or_else(|| names.first());
         if let Some(name) = pick
             && name != branch
             && !chain.iter().any(|c| c == name)
@@ -1309,8 +1411,7 @@ fn recorded_base(
     // In-memory gate (no git): does another non-trunk branch sit at `branch`'s
     // tip? If not, the tip is unique and inference is reliable — skip the record.
     let shares_tip = tips.values().any(|names| {
-        names.iter().any(|n| n == branch)
-            && names.iter().any(|n| n != branch && n != default)
+        names.iter().any(|n| n == branch) && names.iter().any(|n| n != branch && n != default)
     });
     if !shares_tip {
         return None;
@@ -1386,7 +1487,11 @@ fn direct_children(
     let mut kids: Vec<String> = desc
         .into_iter()
         .filter(|x| {
-            lineage_cached(repo, x, tips, default, wt, memo).iter().rev().nth(1).map(String::as_str)
+            lineage_cached(repo, x, tips, default, wt, memo)
+                .iter()
+                .rev()
+                .nth(1)
+                .map(String::as_str)
                 == Some(parent)
         })
         .collect();
@@ -1398,7 +1503,9 @@ fn direct_children(
         .flat_map(|(sha, names)| names.iter().map(move |n| (n.as_str(), sha.as_str())))
         .collect();
     kids.sort_by(|a, b| {
-        (!wt.contains(a.as_str())).cmp(&!wt.contains(b.as_str())).then_with(|| a.cmp(b))
+        (!wt.contains(a.as_str()))
+            .cmp(&!wt.contains(b.as_str()))
+            .then_with(|| a.cmp(b))
     });
     let mut seen: HashSet<&str> = HashSet::new();
     kids.retain(|k| name_sha.get(k.as_str()).is_none_or(|sha| seen.insert(sha)));
@@ -1428,8 +1535,11 @@ struct Status {
 /// the raw lines. A malformed/empty read yields an all-zero (clean) Status.
 fn worktree_status(path: &Path) -> Status {
     let mut st = Status::default();
-    let Some(out) =
-        Command::new("git").args(["status", "--porcelain"]).current_dir(path).output().ok()
+    let Some(out) = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(path)
+        .output()
+        .ok()
     else {
         return st;
     };
@@ -1462,8 +1572,11 @@ struct AheadBehind {
 fn ahead_behind(path: &Path) -> Option<AheadBehind> {
     // `--left-right --count @{u}...HEAD` prints "<behind>\t<ahead>": left is
     // reachable from the upstream only (behind), right from HEAD only (ahead).
-    let out = git_capture(Some(path), &["rev-list", "--left-right", "--count", "@{u}...HEAD"])
-        .ok()?;
+    let out = git_capture(
+        Some(path),
+        &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
+    )
+    .ok()?;
     let mut it = out.split_whitespace();
     let behind = it.next()?.parse().ok()?;
     let ahead = it.next()?.parse().ok()?;
@@ -1572,8 +1685,11 @@ pub fn bottom() -> Result<()> {
 /// The branch checked out in the invoking worktree, or an error if HEAD is
 /// detached (nothing to navigate relative to).
 fn current_branch(repo: &Repo) -> Result<String> {
-    let head = git_capture(Some(repo.cwd()), &["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .map_err(|_| anyhow!("HEAD is detached — stack navigation needs a branch checked out"))?;
+    let head = git_capture(
+        Some(repo.cwd()),
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+    )
+    .map_err(|_| anyhow!("HEAD is detached — stack navigation needs a branch checked out"))?;
     if head.is_empty() {
         bail!("HEAD is detached — stack navigation needs a branch checked out");
     }
@@ -1589,12 +1705,17 @@ fn navigate(nav: &Nav) -> Result<()> {
     let current = current_branch(&repo)?;
     let tips = branch_tips(&repo);
     let default = default_branch(&repo, &cfg, &tips).ok_or_else(|| {
-        anyhow!("no trunk branch found — stack lineage needs main/master or a configured default_branch")
+        anyhow!(
+            "no trunk branch found — stack lineage needs main/master or a configured default_branch"
+        )
     })?;
     let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
     let worktrees = parse_worktrees(&list);
-    let wt: HashSet<&str> =
-        worktrees.iter().filter(|w| !w.bare).map(|w| w.label.as_str()).collect();
+    let wt: HashSet<&str> = worktrees
+        .iter()
+        .filter(|w| !w.bare)
+        .map(|w| w.label.as_str())
+        .collect();
 
     let step = match nav {
         Nav::Down => parent_of(&repo, &current, &tips, &default, &wt),
@@ -1629,7 +1750,9 @@ fn parent_of(
     // chain is root-anchored with `current` last; its predecessor is the parent.
     match chain.iter().rev().nth(1) {
         Some(parent) => Ok(NavStep::Go(parent.clone())),
-        None => Ok(NavStep::Stay("already at the bottom of the stack (on the trunk)")),
+        None => Ok(NavStep::Stay(
+            "already at the bottom of the stack (on the trunk)",
+        )),
     }
 }
 
@@ -1647,7 +1770,9 @@ fn base_of(
     let mut memo: HashMap<String, Vec<String>> = HashMap::new();
     let chain = lineage_cached(repo, current, tips, default, wt, &mut memo);
     match chain.get(1) {
-        None => Ok(NavStep::Stay("already at the bottom of the stack (on the trunk)")),
+        None => Ok(NavStep::Stay(
+            "already at the bottom of the stack (on the trunk)",
+        )),
         Some(base) if base == current => Ok(NavStep::Stay("already at the bottom of the stack")),
         Some(base) => Ok(NavStep::Go(base.clone())),
     }
@@ -1844,7 +1969,12 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
         }
     }
     if let Some(p) = path {
-        out.push(Worktree { path: p, label, bare, detached });
+        out.push(Worktree {
+            path: p,
+            label,
+            bare,
+            detached,
+        });
     }
     out
 }
@@ -1949,8 +2079,18 @@ fn run_hooks(
     fatal: bool,
 ) -> Result<()> {
     let wt = worktree.to_string_lossy();
-    let vars = [("repo", repo.name.as_str()), ("branch", branch), ("worktree_path", &wt)];
-    for hook in cfg.hooks.as_deref().unwrap_or(&[]).iter().filter(|h| h.event == event) {
+    let vars = [
+        ("repo", repo.name.as_str()),
+        ("branch", branch),
+        ("worktree_path", &wt),
+    ];
+    for hook in cfg
+        .hooks
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter(|h| h.event == event)
+    {
         let cmd = render(&hook.run, &vars);
         eprintln!("[{event}] {cmd}");
         let mut command = Command::new("sh");
@@ -2052,7 +2192,10 @@ mod tests {
 
     #[test]
     fn render_substitutes() {
-        let out = render("{repo}.git/{branch}", &[("repo", "tonic"), ("branch", "feat/x")]);
+        let out = render(
+            "{repo}.git/{branch}",
+            &[("repo", "tonic"), ("branch", "feat/x")],
+        );
         assert_eq!(out, "tonic.git/feat/x");
     }
 
@@ -2087,7 +2230,10 @@ mod tests {
     fn parse_worktree_finds_branch() {
         let out = "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\n\
                    worktree /repo/.worktrees/feat\nHEAD def\nbranch refs/heads/feat\n";
-        assert_eq!(parse_worktree(out, "feat"), Some(PathBuf::from("/repo/.worktrees/feat")));
+        assert_eq!(
+            parse_worktree(out, "feat"),
+            Some(PathBuf::from("/repo/.worktrees/feat"))
+        );
         assert_eq!(parse_worktree(out, "nope"), None);
     }
 
@@ -2128,13 +2274,19 @@ mod tests {
         assert!(wts[0].bare);
         // the branch literally named "bare": not the anchor, and cd finds it
         assert!(!wts[1].bare);
-        assert_eq!(parse_worktree(out, "bare"), Some(PathBuf::from("/repo.git/bare")));
+        assert_eq!(
+            parse_worktree(out, "bare"),
+            Some(PathBuf::from("/repo.git/bare"))
+        );
     }
 
     #[test]
     fn mode_defaults_to_copy() {
         let cfg = Config {
-            include: Some(vec![Include { pattern: "node_modules".into(), mode: Mode::Symlink }]),
+            include: Some(vec![Include {
+                pattern: "node_modules".into(),
+                mode: Mode::Symlink,
+            }]),
             ..Config::default()
         };
         assert_eq!(cfg.mode_for("node_modules"), Mode::Symlink);

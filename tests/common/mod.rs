@@ -34,7 +34,12 @@ impl Scratch {
         let root = tmp.path().to_path_buf();
         let repo = root.join("repo");
         std::fs::create_dir(&repo).unwrap();
-        let s = Scratch { _tmp: tmp, root, repo, bare_dir: None };
+        let s = Scratch {
+            _tmp: tmp,
+            root,
+            repo,
+            bare_dir: None,
+        };
         s.git(&["init", "-q", "-b", "main"]);
         s.git(&["config", "user.email", "t@t.co"]);
         s.git(&["config", "user.name", "t"]);
@@ -52,7 +57,12 @@ impl Scratch {
         let root = tmp.path().to_path_buf();
         let bare = root.join("barerepo.git");
         // partially-built Scratch so the git_in/commit_in helpers are usable
-        let mut s = Scratch { _tmp: tmp, root: root.clone(), repo: root.clone(), bare_dir: None };
+        let mut s = Scratch {
+            _tmp: tmp,
+            root: root.clone(),
+            repo: root.clone(),
+            bare_dir: None,
+        };
         // seed a normal repo with one commit, then bare-clone it
         let seed = root.join("seed");
         std::fs::create_dir(&seed).unwrap();
