@@ -9,7 +9,7 @@
 )]
 
 mod common;
-use common::{stderr, stdout, Scratch};
+use common::{Scratch, stderr, stdout};
 
 /// Line index of the first row naming `branch` (panics if absent).
 fn row(out: &str, branch: &str) -> usize {
@@ -28,10 +28,19 @@ fn stack_lists_the_chain_tip_to_trunk() {
 
     let out = stdout(&s.tonic_in(&s.wt("b"), &["stack"]));
     // tip at top, trunk at bottom
-    assert!(row(&out, "b") < row(&out, "a"), "tip should be above its parent:\n{out}");
-    assert!(row(&out, "a") < row(&out, "main"), "trunk should be at the bottom:\n{out}");
+    assert!(
+        row(&out, "b") < row(&out, "a"),
+        "tip should be above its parent:\n{out}"
+    );
+    assert!(
+        row(&out, "a") < row(&out, "main"),
+        "trunk should be at the bottom:\n{out}"
+    );
     // current branch is marked
-    assert!(out.lines().any(|l| l.contains('▸') && l.contains('b')), "current not marked:\n{out}");
+    assert!(
+        out.lines().any(|l| l.contains('▸') && l.contains('b')),
+        "current not marked:\n{out}"
+    );
 }
 
 #[test]
@@ -44,8 +53,14 @@ fn stack_climbs_above_a_mid_stack_branch() {
     // run from a (mid-stack): the single child b stacked above must render above it
     // (exercises the climb-toward-the-tip path, not just ancestors).
     let out = stdout(&s.tonic_in(&s.wt("a"), &["stack"]));
-    assert!(row(&out, "b") < row(&out, "a"), "child should render above current:\n{out}");
-    assert!(row(&out, "a") < row(&out, "main"), "trunk should be at the bottom:\n{out}");
+    assert!(
+        row(&out, "b") < row(&out, "a"),
+        "child should render above current:\n{out}"
+    );
+    assert!(
+        row(&out, "a") < row(&out, "main"),
+        "trunk should be at the bottom:\n{out}"
+    );
     assert!(
         out.lines().any(|l| l.contains('▸') && l.contains('a')),
         "current branch a not marked:\n{out}"
@@ -67,7 +82,10 @@ fn stack_notes_a_fork() {
 
     let out = stdout(&s.tonic_in(&a, &["stack"]));
     assert!(out.contains("forks into"), "a fork should be noted:\n{out}");
-    assert!(out.contains('b') && out.contains('c'), "fork note should name the children:\n{out}");
+    assert!(
+        out.contains('b') && out.contains('c'),
+        "fork note should name the children:\n{out}"
+    );
 }
 
 #[test]
@@ -77,5 +95,9 @@ fn stack_errors_on_a_detached_head() {
     s.git_in(&s.wt("foo"), &["switch", "-q", "--detach", "HEAD"]);
     let out = s.tonic_in(&s.wt("foo"), &["stack"]);
     assert!(!out.status.success(), "stack needs a branch checked out");
-    assert!(stderr(&out).contains("detached"), "expected a detached-HEAD error:\n{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("detached"),
+        "expected a detached-HEAD error:\n{}",
+        stderr(&out)
+    );
 }

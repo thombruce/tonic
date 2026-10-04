@@ -9,7 +9,7 @@
 )]
 
 mod common;
-use common::{stderr, stdout, Scratch};
+use common::{Scratch, stderr, stdout};
 
 #[test]
 fn add_creates_a_new_branch_and_worktree() {
@@ -17,7 +17,10 @@ fn add_creates_a_new_branch_and_worktree() {
     let out = s.tonic(&["add", "newb"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(s.wt("newb").exists(), "worktree dir not created");
-    assert!(s.git(&["branch", "--list", "newb"]).contains("newb"), "branch not created");
+    assert!(
+        s.git(&["branch", "--list", "newb"]).contains("newb"),
+        "branch not created"
+    );
 }
 
 #[test]
@@ -53,7 +56,10 @@ fn base_roots_a_new_branch_at_the_given_ref() {
     // subjects only — `--oneline` includes the SHA, whose hex can contain "fc"
     // and spuriously match (a flaky-in-CI substring collision).
     let log = s.git_in(&s.wt("newb"), &["log", "--format=%s"]);
-    assert!(!log.contains("fc"), "newb should not include feature's commit:\n{log}");
+    assert!(
+        !log.contains("fc"),
+        "newb should not include feature's commit:\n{log}"
+    );
 }
 
 #[test]
@@ -108,14 +114,22 @@ fn add_survives_a_failing_post_create_hook() {
     )
     .unwrap();
     let out = s.tonic(&["add", "feat"]);
-    assert!(out.status.success(), "post_create failure must not abort add:\n{}", stderr(&out));
+    assert!(
+        out.status.success(),
+        "post_create failure must not abort add:\n{}",
+        stderr(&out)
+    );
     assert!(s.wt("feat").exists(), "worktree should still be created");
     assert!(
         stdout(&out).trim().ends_with("repo-feat"),
         "the path must still print for the wrapper to cd:\n{}",
         stdout(&out)
     );
-    assert!(stderr(&out).contains("hook failed"), "the failure should be surfaced:\n{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("hook failed"),
+        "the failure should be surfaced:\n{}",
+        stderr(&out)
+    );
 }
 
 #[test]

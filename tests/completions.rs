@@ -9,7 +9,7 @@
 )]
 
 mod common;
-use common::{stdout, Scratch};
+use common::{Scratch, stdout};
 
 #[test]
 fn completions_emits_a_script() {
@@ -17,7 +17,11 @@ fn completions_emits_a_script() {
     let out = s.tonic(&["completions", "bash"]);
     assert!(out.status.success(), "completions should succeed");
     // the generated bash script defines the completion function for the binary
-    assert!(stdout(&out).contains("_tonic"), "expected a completion script:\n{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("_tonic"),
+        "expected a completion script:\n{}",
+        stdout(&out)
+    );
 }
 
 #[test]

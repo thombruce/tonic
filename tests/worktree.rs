@@ -9,7 +9,7 @@
 )]
 
 mod common;
-use common::{stderr, stdout, Scratch};
+use common::{Scratch, stderr, stdout};
 
 /// The repo's local branch names.
 fn branches(s: &Scratch) -> Vec<String> {
@@ -124,7 +124,10 @@ fn rm_is_blocked_by_a_failing_pre_remove_hook() {
     s.tonic(&["add", "foo"]);
     let out = s.tonic(&["rm", "foo", "-f"]);
     assert!(!out.status.success(), "a failing pre_remove must block rm");
-    assert!(s.wt("foo").exists(), "the worktree must survive a blocked rm");
+    assert!(
+        s.wt("foo").exists(),
+        "the worktree must survive a blocked rm"
+    );
 }
 
 #[test]
@@ -144,7 +147,10 @@ fn rm_resolves_a_detached_worktree_by_name() {
     // detach HEAD in the worktree: its branch label no longer matches "foo"
     s.git_in(&s.wt("foo"), &["switch", "-q", "--detach", "HEAD"]);
     let out = s.tonic(&["rm", "foo", "-f"]);
-    assert!(out.status.success(), "rm couldn't resolve a detached worktree");
+    assert!(
+        out.status.success(),
+        "rm couldn't resolve a detached worktree"
+    );
     assert!(!s.wt("foo").exists());
 }
 
@@ -207,5 +213,8 @@ fn rm_of_the_current_worktree_prints_a_fallback_path() {
     assert!(out.status.success());
     let path = stdout(&out);
     assert!(!path.trim().is_empty(), "no fallback path printed");
-    assert!(path.contains("repo"), "fallback should be the main worktree:\n{path}");
+    assert!(
+        path.contains("repo"),
+        "fallback should be the main worktree:\n{path}"
+    );
 }

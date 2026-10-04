@@ -10,7 +10,7 @@
 )]
 
 mod common;
-use common::{stdout, Scratch};
+use common::{Scratch, stdout};
 
 /// Build `main → a → b`: each branch created from the one below's worktree, with
 /// a commit of its own.
@@ -28,8 +28,14 @@ fn deep_stack_shows_full_lineage() {
     let out = stdout(&s.tonic(&["list"]));
     // each row names its own branch, flagged with `*`: b's row is the full stack
     // `main → a → *b`; a's row (a base branch, so bare of the trunk) is `*a → b`.
-    assert!(out.contains("main → a → *b"), "expected b's full lineage, got:\n{out}");
-    assert!(out.contains("*a → b"), "expected a's lineage with child, got:\n{out}");
+    assert!(
+        out.contains("main → a → *b"),
+        "expected b's full lineage, got:\n{out}"
+    );
+    assert!(
+        out.contains("*a → b"),
+        "expected a's lineage with child, got:\n{out}"
+    );
 }
 
 #[test]
@@ -39,7 +45,10 @@ fn detached_worktree_reads_as_detached() {
     // detach the worktree's HEAD — it has no branch, so the row can't name one
     s.git_in(&s.wt("foo"), &["switch", "-q", "--detach", "HEAD"]);
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("(detached)"), "detached worktree not marked:\n{out}");
+    assert!(
+        out.contains("(detached)"),
+        "detached worktree not marked:\n{out}"
+    );
 }
 
 #[test]
@@ -49,7 +58,10 @@ fn plain_branch_off_main_has_no_lineage() {
     s.commit_in(&s.wt("solo"), "sc");
     let out = stdout(&s.tonic(&["list"]));
     // a branch directly on the trunk is not a stack
-    assert!(!out.contains('→'), "plain branch should not be annotated:\n{out}");
+    assert!(
+        !out.contains('→'),
+        "plain branch should not be annotated:\n{out}"
+    );
 }
 
 #[test]
@@ -63,7 +75,10 @@ fn lineage_survives_main_drifting_past_the_base() {
     s.git(&["merge", "--ff-only", "A"]);
     s.commit_in(&s.repo, "m2");
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("main → A → *B"), "drift regression: lineage lost:\n{out}");
+    assert!(
+        out.contains("main → A → *B"),
+        "drift regression: lineage lost:\n{out}"
+    );
 }
 
 #[test]
@@ -79,7 +94,10 @@ fn child_without_a_worktree_is_shown() {
     s.git_in(&foo, &["switch", "-q", "foo"]);
     let out = stdout(&s.tonic(&["list"]));
     // foo's row: `*foo → bar` — bar (no worktree) still shown as foo's child.
-    assert!(out.contains("*foo → bar"), "non-worktree child not shown:\n{out}");
+    assert!(
+        out.contains("*foo → bar"),
+        "non-worktree child not shown:\n{out}"
+    );
 }
 
 #[test]
@@ -106,7 +124,10 @@ fn dirty_count_replaces_the_dirty_word() {
     std::fs::write(s.wt("foo").join("wip"), "x").unwrap(); // 1 untracked
     let out = stdout(&s.tonic(&["list"]));
     assert!(out.contains("!1"), "expected a compact dirty count:\n{out}");
-    assert!(!out.contains("(dirty)"), "the (dirty) word should be gone:\n{out}");
+    assert!(
+        !out.contains("(dirty)"),
+        "the (dirty) word should be gone:\n{out}"
+    );
 }
 
 #[test]
@@ -117,8 +138,14 @@ fn verbose_splits_the_status() {
     let out = stdout(&s.tonic(&["list", "-v"]));
     // verbose expands the status (?1 vs !1); the lineage is unchanged — the `*`
     // marker flags a shown name, so it's non-lossy and stays in verbose too.
-    assert!(out.contains("?1"), "verbose should split out untracked:\n{out}");
-    assert!(out.contains("main → a → *b"), "verbose keeps the marked lineage:\n{out}");
+    assert!(
+        out.contains("?1"),
+        "verbose should split out untracked:\n{out}"
+    );
+    assert!(
+        out.contains("main → a → *b"),
+        "verbose keeps the marked lineage:\n{out}"
+    );
 }
 
 #[test]
@@ -134,11 +161,20 @@ fn a_staged_and_modified_file_counts_once_compact_but_splits_verbose() {
 
     // compact counts the file once, not twice
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("!1"), "MM file should count once in compact:\n{out}");
-    assert!(!out.contains("!2"), "MM file must not be double-counted:\n{out}");
+    assert!(
+        out.contains("!1"),
+        "MM file should count once in compact:\n{out}"
+    );
+    assert!(
+        !out.contains("!2"),
+        "MM file must not be double-counted:\n{out}"
+    );
     // verbose still shows it in both staged and unstaged
     let vout = stdout(&s.tonic(&["list", "-v"]));
-    assert!(vout.contains("+1") && vout.contains("*1"), "verbose should split MM:\n{vout}");
+    assert!(
+        vout.contains("+1") && vout.contains("*1"),
+        "verbose should split MM:\n{vout}"
+    );
 }
 
 #[test]
@@ -167,10 +203,22 @@ fn porcelain_is_lossless_and_undecorated() {
     let out = stdout(&s.tonic(&["list", "--porcelain"]));
     // full names, no `*` self-marker or `→` arrows (those are human decoration)
     assert!(out.contains("branch b"), "missing branch record:\n{out}");
-    assert!(out.contains("lineage main a b"), "lineage should be full names:\n{out}");
-    assert!(out.contains("children b"), "a's children not recorded:\n{out}");
-    assert!(out.contains("status files=1 staged=0 unstaged=0 untracked=1"), "status wrong:\n{out}");
-    assert!(!out.contains('→') && !out.contains('*'), "machine output must not be decorated:\n{out}");
+    assert!(
+        out.contains("lineage main a b"),
+        "lineage should be full names:\n{out}"
+    );
+    assert!(
+        out.contains("children b"),
+        "a's children not recorded:\n{out}"
+    );
+    assert!(
+        out.contains("status files=1 staged=0 unstaged=0 untracked=1"),
+        "status wrong:\n{out}"
+    );
+    assert!(
+        !out.contains('→') && !out.contains('*'),
+        "machine output must not be decorated:\n{out}"
+    );
 }
 
 #[test]
@@ -182,9 +230,18 @@ fn json_is_lossless_and_undecorated() {
     assert!(out.contains("\"branch\": \"b\""), "missing branch:\n{out}");
     assert!(out.contains("\"lineage\""), "missing lineage:\n{out}");
     // full names present, decoration absent
-    assert!(out.contains("\"main\"") && out.contains("\"a\"") && out.contains("\"b\""), "names missing:\n{out}");
-    assert!(out.contains("\"untracked\": 1"), "status not serialized:\n{out}");
-    assert!(!out.contains('→') && !out.contains('*'), "machine output must not be decorated:\n{out}");
+    assert!(
+        out.contains("\"main\"") && out.contains("\"a\"") && out.contains("\"b\""),
+        "names missing:\n{out}"
+    );
+    assert!(
+        out.contains("\"untracked\": 1"),
+        "status not serialized:\n{out}"
+    );
+    assert!(
+        !out.contains('→') && !out.contains('*'),
+        "machine output must not be decorated:\n{out}"
+    );
 }
 
 #[test]
@@ -192,7 +249,10 @@ fn a_branch_named_detached_is_not_misread() {
     let s = Scratch::new();
     s.tonic(&["add", "detached"]); // a branch literally named "detached"
     let out = stdout(&s.tonic(&["list", "--porcelain"]));
-    assert!(out.contains("branch detached"), "named branch should be recorded:\n{out}");
+    assert!(
+        out.contains("branch detached"),
+        "named branch should be recorded:\n{out}"
+    );
     assert!(
         !out.lines().any(|l| l == "detached"),
         "a branch named 'detached' must not be flagged as a detached HEAD:\n{out}"
@@ -203,7 +263,10 @@ fn a_branch_named_detached_is_not_misread() {
 fn porcelain_and_json_conflict() {
     let s = Scratch::new();
     let out = s.tonic(&["list", "--porcelain", "--json"]);
-    assert!(!out.status.success(), "the two machine formats should be mutually exclusive");
+    assert!(
+        !out.status.success(),
+        "the two machine formats should be mutually exclusive"
+    );
 }
 
 #[test]
@@ -243,8 +306,14 @@ fn trunk_auto_detected_from_origin_head() {
 
     let out = stdout(&s.tonic(&["list"]));
     // no config, but origin/HEAD → develop wins over the main/master guess
-    assert!(out.contains("develop → a → *b"), "origin/HEAD trunk not detected:\n{out}");
-    assert!(!out.contains("main → develop"), "develop should be the root, not a child of main:\n{out}");
+    assert!(
+        out.contains("develop → a → *b"),
+        "origin/HEAD trunk not detected:\n{out}"
+    );
+    assert!(
+        !out.contains("main → develop"),
+        "develop should be the root, not a child of main:\n{out}"
+    );
 }
 
 #[test]
@@ -259,7 +328,10 @@ fn empty_branch_off_a_descendant_keeps_its_parent() {
     let out = stdout(&s.tonic(&["list"]));
     // c's tip coincides with b's, so pure inference would skip b and show `a → *c`;
     // the recorded base keeps b as c's parent.
-    assert!(out.contains("a → b → *c"), "empty branch lost its recorded parent:\n{out}");
+    assert!(
+        out.contains("a → b → *c"),
+        "empty branch lost its recorded parent:\n{out}"
+    );
 }
 
 #[test]
@@ -272,7 +344,10 @@ fn record_is_ignored_for_a_unique_tip_branch() {
     // b's tip is unique, so inference is authoritative and the record is not even
     // consulted — a is kept. (Guards against a stale record overriding a correct
     // inferred chain, e.g. after a re-parenting rebase.)
-    assert!(out.contains("main → a → *b"), "inference must win for a unique-tip branch:\n{out}");
+    assert!(
+        out.contains("main → a → *b"),
+        "inference must win for a unique-tip branch:\n{out}"
+    );
 }
 
 #[test]
@@ -283,8 +358,14 @@ fn a_stale_tonicbase_record_is_ignored() {
     // a record pointing at a branch that doesn't exist must be dropped, not trusted
     s.git(&["config", "branch.solo.tonicbase", "ghost"]);
     let out = stdout(&s.tonic(&["list"]));
-    assert!(!out.contains("ghost"), "a stale record leaked into the lineage:\n{out}");
-    assert!(out.contains("*solo"), "solo should still render via inference:\n{out}");
+    assert!(
+        !out.contains("ghost"),
+        "a stale record leaked into the lineage:\n{out}"
+    );
+    assert!(
+        out.contains("*solo"),
+        "solo should still render via inference:\n{out}"
+    );
 }
 
 #[test]
@@ -300,13 +381,22 @@ fn configured_default_branch_anchors_lineage() {
 
     // without config, main is the trunk: develop reads as a stacked branch
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("main → develop → a → *b"), "default trunk should be main:\n{out}");
+    assert!(
+        out.contains("main → develop → a → *b"),
+        "default trunk should be main:\n{out}"
+    );
 
     // with default_branch = develop, lineage anchors at develop instead
     std::fs::write(s.repo.join("tonic.toml"), "default_branch = \"develop\"\n").unwrap();
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("develop → a → *b"), "configured trunk not honored:\n{out}");
-    assert!(!out.contains("main → develop"), "develop should be the root, not a child:\n{out}");
+    assert!(
+        out.contains("develop → a → *b"),
+        "configured trunk not honored:\n{out}"
+    );
+    assert!(
+        !out.contains("main → develop"),
+        "develop should be the root, not a child:\n{out}"
+    );
 }
 
 #[test]
@@ -316,7 +406,10 @@ fn stale_default_branch_config_falls_back() {
     // a branch that doesn't exist must not point lineage at a phantom ref
     std::fs::write(s.repo.join("tonic.toml"), "default_branch = \"nope\"\n").unwrap();
     let out = stdout(&s.tonic(&["list"]));
-    assert!(out.contains("main → a → *b"), "stale config should fall back to main:\n{out}");
+    assert!(
+        out.contains("main → a → *b"),
+        "stale config should fall back to main:\n{out}"
+    );
 }
 
 #[test]
@@ -329,10 +422,16 @@ fn empty_branch_shows_its_lineage_immediately_via_the_record() {
     // the recorded base (#78) resolves the parent even while empty twins foo's
     // tip — no transient "no lineage until it commits" gap for a tonic-made branch
     let before = stdout(&s.tonic(&["list"]));
-    assert!(before.contains("main → foo → *empty"), "record should give lineage at once:\n{before}");
+    assert!(
+        before.contains("main → foo → *empty"),
+        "record should give lineage at once:\n{before}"
+    );
 
     // and it stays correct once it has a commit of its own
     s.commit_in(&s.wt("empty"), "ec");
     let after = stdout(&s.tonic(&["list"]));
-    assert!(after.contains("main → foo → *empty"), "lineage should remain correct:\n{after}");
+    assert!(
+        after.contains("main → foo → *empty"),
+        "lineage should remain correct:\n{after}"
+    );
 }
