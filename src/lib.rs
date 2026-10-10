@@ -941,8 +941,8 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
 /// The default human view (#71): one row per worktree, worktree **dir first**
 /// (the aligned left column, relative to `base`), then the branch folded into its
 /// own lineage — named and flagged with `*`, not a separate column. The current
-/// worktree is marked `▸`. Verbose only expands the trailing status; the lineage
-/// is identical, since `*` now flags a shown name rather than replacing one.
+/// worktree is marked `▸`. Verbose expands the trailing status and shows the
+/// full, uncompacted lineage (compact mode elides/caps it, #99).
 fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
     let dirs: Vec<String> = views.iter().map(|v| short_path(&v.abs, base)).collect();
     let width = dirs.iter().map(|d| d.chars().count()).max().unwrap_or(0);
@@ -975,10 +975,28 @@ fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
             dir_pad
         };
 
-        let cell = lineage_cell(v);
+        let cell = lineage_cell(v, verbose);
         let status = status_cell(v, verbose);
         println!("{marker} {dir_col}  {cell}{status}");
     }
+}
+
+/// Non-self names in a compact lineage (trunk, parent, child) are cut to this
+/// many chars, `…` included (#99). Cutting from the end keeps a leading ticket
+/// ID (`abcd1234_descr…`).
+const LINEAGE_NAME_CAP: usize = 16;
+
+/// `name`, cut to `LINEAGE_NAME_CAP` chars with a trailing `…` when longer.
+fn cap_name(name: &str) -> String {
+    if name.chars().count() <= LINEAGE_NAME_CAP {
+        return name.to_string();
+    }
+    let mut s: String = name
+        .chars()
+        .take(LINEAGE_NAME_CAP.saturating_sub(1))
+        .collect();
+    s.push('…');
+    s
 }
 
 /// The lineage cell for a row: the branch name (bold) flagged with a green `*`,
@@ -986,7 +1004,12 @@ fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
 /// above the trunk, i.e. `lineage` len >= 3 — a branch directly on the trunk
 /// shows bare), and followed by its children (`→ child` / `→ [N]`). A detached
 /// HEAD has no branch, so it reads `(detached)`.
-fn lineage_cell(v: &WorktreeView) -> String {
+///
+/// Compact (non-verbose) mode keeps a deep stack of long names on one line
+/// (#99): ancestors between the trunk and the parent collapse to `⋯N` (only
+/// when that hides 2+ names), and every name but the row's own is cut to
+/// `LINEAGE_NAME_CAP`. Verbose shows the full chain.
+fn lineage_cell(v: &WorktreeView, verbose: bool) -> String {
     let Some(name) = &v.branch else {
         return format!(
             "{}",
@@ -994,13 +1017,27 @@ fn lineage_cell(v: &WorktreeView) -> String {
         );
     };
     let dim = |s: String| format!("{}", s.if_supports_color(Stream::Stdout, |t| t.dimmed()));
+    let other = |s: &str| if verbose { s.to_string() } else { cap_name(s) };
     let mut cell = String::new();
     // Ancestors above the trunk (drop the trunk itself for a bare base branch).
     if v.lineage.len() >= 3
         && let Some((_branch, ancestors)) = v.lineage.split_last()
     {
-        for anc in ancestors {
-            cell.push_str(&dim(format!("{anc} → ")));
+        // [trunk, ⋯hidden, parent] once the middle hides 2+ names.
+        let hidden = ancestors.len().saturating_sub(2);
+        if !verbose
+            && hidden >= 2
+            && let (Some(trunk), Some(parent)) = (ancestors.first(), ancestors.last())
+        {
+            cell.push_str(&dim(format!(
+                "{} → ⋯{hidden} → {} → ",
+                other(trunk),
+                other(parent)
+            )));
+        } else {
+            for anc in ancestors {
+                cell.push_str(&dim(format!("{} → ", other(anc))));
+            }
         }
     }
     cell.push_str(&format!(
@@ -1015,7 +1052,7 @@ fn lineage_cell(v: &WorktreeView) -> String {
         // `+` marks an unfiltered descendant count (cap hit).
         cell.push_str(&dim(format!(" → [{n}+]")));
     } else if let [only] = v.children.as_slice() {
-        cell.push_str(&dim(format!(" → {only}")));
+        cell.push_str(&dim(format!(" → {}", other(only))));
     } else if v.children.len() > 1 {
         cell.push_str(&dim(format!(" → [{}]", v.children.len())));
     }
@@ -2181,6 +2218,17 @@ fn git_capture(dir: Option<&Path>, args: &[&str]) -> Result<String> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cap_name_cuts_long_names_keeping_the_prefix() {
+        assert_eq!(cap_name("main"), "main");
+        assert_eq!(cap_name("abcd1234_sixteen"), "abcd1234_sixteen"); // exactly at cap
+        assert_eq!(cap_name("abcd1234_description_of"), "abcd1234_descri…");
+        assert_eq!(
+            cap_name("abcd1234_description_of").chars().count(),
+            LINEAGE_NAME_CAP
+        );
+    }
 
     #[test]
     fn shell_wrapper_per_shell() {
