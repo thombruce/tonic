@@ -52,13 +52,11 @@ fn deep_long_stack_is_compacted_unless_verbose() {
         s.commit_in(&from, n);
     }
     let out = stdout(&s.tonic(&["list"]));
-    // the 7th row: trunk, ⋯ (5 hidden: tkt1..tkt5), capped parent, full self, capped child
-    let want = format!(
-        "main → ⋯5 → tkt0006_descrip… → *{} → tkt0008_descrip…",
-        names[6]
-    );
+    // the 7th row: trunk, ⋯ (5 hidden: tkt1..tkt5), capped parent, capped self
+    // (its dir already spells it, #101), capped child
+    let want = "main → ⋯5 → tkt0006_descrip… → *tkt0007_descrip… → tkt0008_descrip…";
     assert!(
-        out.contains(&want),
+        out.contains(want),
         "expected compacted lineage {want:?}, got:\n{out}"
     );
     // verbose: the full, uncapped chain
@@ -67,6 +65,36 @@ fn deep_long_stack_is_compacted_unless_verbose() {
     assert!(
         vout.contains(&full),
         "expected full lineage {full:?}, got:\n{vout}"
+    );
+}
+
+#[test]
+fn own_name_is_capped_only_while_the_dir_spells_it() {
+    let s = Scratch::new();
+    let long = "tkt0001_description_of_the_changes";
+    let other = "tkt0002_another_long_branch_name";
+    s.tonic(&["add", long]);
+    s.git_in(&s.repo, &["branch", other]);
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(
+        out.contains("*tkt0001_descrip…"),
+        "expected capped self:\n{out}"
+    );
+
+    // switched: the dir no longer names the branch, so self shows in full (#101)
+    s.git_in(&s.wt(long), &["switch", "-q", other]);
+    let out = stdout(&s.tonic(&["list"]));
+    assert!(
+        out.contains(&format!("*{other}")),
+        "expected full self:\n{out}"
+    );
+
+    // verbose is never capped
+    s.git_in(&s.wt(long), &["switch", "-q", long]);
+    let vout = stdout(&s.tonic(&["list", "-v"]));
+    assert!(
+        vout.contains(&format!("*{long}")),
+        "expected full self:\n{vout}"
     );
 }
 

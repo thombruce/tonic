@@ -825,6 +825,10 @@ struct WorktreeView {
     /// The path as a `PathBuf` for `short_path` (human view); not serialized.
     #[serde(skip)]
     abs: PathBuf,
+    /// The dir is exactly the path `add` would make for `branch`, so it already
+    /// spells the name — the human view caps `*self` (#101). Not serialized.
+    #[serde(skip)]
+    dir_names_branch: bool,
 }
 
 pub fn list(format: ListFormat, verbose: bool) -> Result<()> {
@@ -917,6 +921,9 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
             )
         };
 
+        let dir_names_branch = branch
+            .as_deref()
+            .is_some_and(|b| w.path == worktree_path_for(repo, cfg, b));
         views.push(WorktreeView {
             branch,
             // ponytail: display() is lossy on a non-UTF8 worktree path (→ U+FFFD).
@@ -932,6 +939,7 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
             status,
             ahead,
             behind,
+            dir_names_branch,
             abs: w.path.clone(),
         });
     }
@@ -1008,7 +1016,9 @@ fn cap_name(name: &str) -> String {
 /// Compact (non-verbose) mode keeps a deep stack of long names on one line
 /// (#99): ancestors between the trunk and the parent collapse to `⋯N` (only
 /// when that hides 2+ names), and every name but the row's own is cut to
-/// `LINEAGE_NAME_CAP`. Verbose shows the full chain.
+/// `LINEAGE_NAME_CAP`. The row's own name is capped too when its dir already
+/// spells it (`dir_names_branch`, #101) — a full `*self` then flags a worktree
+/// whose dir has drifted from its branch. Verbose shows the full chain.
 fn lineage_cell(v: &WorktreeView, verbose: bool) -> String {
     let Some(name) = &v.branch else {
         return format!(
@@ -1044,9 +1054,14 @@ fn lineage_cell(v: &WorktreeView, verbose: bool) -> String {
         "{}",
         "*".if_supports_color(Stream::Stdout, |t| t.green())
     ));
+    let own = if v.dir_names_branch {
+        other(name)
+    } else {
+        name.clone()
+    };
     cell.push_str(&format!(
         "{}",
-        name.if_supports_color(Stream::Stdout, |t| t.bold())
+        own.if_supports_color(Stream::Stdout, |t| t.bold())
     ));
     if let Some(n) = v.children_overflow {
         // `+` marks an unfiltered descendant count (cap hit).
