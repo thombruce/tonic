@@ -39,6 +39,38 @@ fn deep_stack_shows_full_lineage() {
 }
 
 #[test]
+fn deep_long_stack_is_compacted_unless_verbose() {
+    // eight stacked branches with long ticket-style names (#99)
+    let s = Scratch::new();
+    let names: Vec<String> = (1..=8)
+        .map(|i| format!("tkt{i:04}_description_of_the_changes"))
+        .collect();
+    let mut from = s.repo.clone();
+    for n in &names {
+        s.tonic_in(&from, &["add", n]);
+        from = s.wt(n);
+        s.commit_in(&from, n);
+    }
+    let out = stdout(&s.tonic(&["list"]));
+    // the 7th row: trunk, ⋯ (5 hidden: tkt1..tkt5), capped parent, full self, capped child
+    let want = format!(
+        "main → ⋯5 → tkt0006_descrip… → *{} → tkt0008_descrip…",
+        names[6]
+    );
+    assert!(
+        out.contains(&want),
+        "expected compacted lineage {want:?}, got:\n{out}"
+    );
+    // verbose: the full, uncapped chain
+    let vout = stdout(&s.tonic(&["list", "-v"]));
+    let full = format!("main → {} → *{}", names[..7].join(" → "), names[7]);
+    assert!(
+        vout.contains(&full),
+        "expected full lineage {full:?}, got:\n{vout}"
+    );
+}
+
+#[test]
 fn detached_worktree_reads_as_detached() {
     let s = Scratch::new();
     s.tonic(&["add", "foo"]);
@@ -136,8 +168,8 @@ fn verbose_splits_the_status() {
     linear_stack(&s); // main → a → b
     std::fs::write(s.wt("b").join("wip"), "x").unwrap(); // 1 untracked on b
     let out = stdout(&s.tonic(&["list", "-v"]));
-    // verbose expands the status (?1 vs !1); the lineage is unchanged — the `*`
-    // marker flags a shown name, so it's non-lossy and stays in verbose too.
+    // verbose expands the status (?1 vs !1); a short stack's lineage is the same
+    // as compact (compaction only kicks in for deep/long stacks, #99).
     assert!(
         out.contains("?1"),
         "verbose should split out untracked:\n{out}"
