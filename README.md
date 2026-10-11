@@ -61,7 +61,7 @@ tonic add --detach <ref>       # a detached worktree at a tag, SHA or ref (no br
 tonic add --pr <N>             # check out pull request N into its own worktree (via gh)
 tonic list [-v|--porcelain|--json]  # list worktrees (alias: ls; -v: full breakdown; --porcelain/--json: machine-readable)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
-tonic checkout <branch>        # cd to the branch's worktree if it has one, else check it out in place
+tonic checkout <branch> [--remote <name>]   # cd to the branch's worktree if it has one, else check it out in place
 tonic stack                    # show the current worktree's stack (tip at top, trunk at bottom)
 tonic up / down                # move one branch up (toward the tip) / down (toward the trunk) the stack
 tonic top / bottom             # jump to the tip / base of the stack
@@ -198,7 +198,9 @@ branch that has its own worktree) never touches your files.
 not just a stack step: "put me on this branch, wherever it lives." It fills the
 gap between `tonic cd` (existing worktrees only) and plain `git checkout` (which
 refuses a branch checked out in another worktree). The same dirty-tree guard
-applies to the in-place case.
+applies to the in-place case. A branch that exists only on a remote is created
+locally, tracking it, the same way `add` resolves it (`origin` preferred,
+`--remote <name>` to pick among several).
 
 ### How `tonic add <branch>` resolves the branch
 

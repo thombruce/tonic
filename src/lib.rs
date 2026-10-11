@@ -2112,7 +2112,8 @@ fn navigate(nav: &Nav) -> Result<()> {
             eprintln!("{msg}");
             Ok(())
         }
-        NavStep::Go(branch) => goto(&repo, &worktrees, &branch),
+        // nav targets are lineage branches, always local: no remote resolution
+        NavStep::Go(branch) => goto(&repo, &worktrees, &branch, None),
     }
 }
 
@@ -2223,9 +2224,15 @@ fn tip_of(
 
 /// Put me on `branch`, wherever it lives (#89): cd-or-checkout for any branch,
 /// not just a stack step. A lateral cd works from anywhere (even the bare dir,
-/// like `cd`); an in-place checkout needs a worktree to check out into.
-pub fn checkout(branch: &str) -> Result<()> {
+/// like `cd`); an in-place checkout needs a worktree to check out into. A
+/// branch only on a remote is created locally, tracking it, like `add` (#108).
+pub fn checkout(branch: &str, remote: Option<&str>) -> Result<()> {
     let repo = Repo::discover()?;
+    if remote.is_some() && branch_exists(&repo, branch) {
+        bail!(
+            "branch '{branch}' already exists locally; --remote only applies when creating it from a remote"
+        );
+    }
     let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
     let worktrees = parse_worktrees(&list);
     let has_wt = worktrees
@@ -2234,13 +2241,14 @@ pub fn checkout(branch: &str) -> Result<()> {
     if repo.root.is_none() && !has_wt {
         bail!("'{branch}' has no worktree — run from inside a worktree to check it out in place");
     }
-    goto(&repo, &worktrees, branch)
+    goto(&repo, &worktrees, branch, remote)
 }
 
 /// Move to `branch`, cd-or-checkout: if it has a worktree, print its path so the
 /// shell wrapper cd's there (lateral); otherwise `git checkout` it in place in
-/// the current worktree (vertical). git's own refusal handles a dirty tree.
-fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str) -> Result<()> {
+/// the current worktree (vertical). A branch that exists only on a remote is
+/// created locally tracking it (`remote` disambiguates, as for `add`).
+fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str, remote: Option<&str>) -> Result<()> {
     let check = "✓".if_supports_color(Stream::Stderr, |t| t.green());
     if let Some(w) = worktrees
         .iter()
@@ -2252,18 +2260,21 @@ fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str) -> Result<()> {
         // stdout path only in the cd case — the wrapper cd's when it's non-empty.
         println!("{}", w.path.display());
     } else {
-        // Local branches only: a missing name would make `git checkout` treat it
-        // as a pathspec (restore files, report success), and a tag/SHA/remote
-        // ref would silently detach HEAD.
-        if !branch_exists(repo, branch) {
-            // hint only when it applies: a remote has the branch (`add` tracks it)
-            let hint = if remotes_with_branch(repo, branch).is_empty() {
-                String::new()
-            } else {
-                format!(" — it's on a remote; use `tonic add {branch}` to track it")
-            };
-            bail!("'{branch}' is not a local branch{hint}");
-        }
+        // A local branch, or one a remote has (#108: created tracking it, the
+        // same resolution as `add`). Anything else is refused: a missing name
+        // would make `git checkout` treat it as a pathspec (restore files, report
+        // success), and a tag/SHA/remote ref would silently detach HEAD.
+        let tracking = if branch_exists(repo, branch) {
+            None
+        } else {
+            match choose_remote(repo, branch, remote)? {
+                Some(r) => {
+                    refuse_ref_name(repo, branch)?; // #106: e.g. also a tag
+                    Some(format!("{r}/{branch}"))
+                }
+                None => bail!("'{branch}' is not a local branch or on any remote"),
+            }
+        };
         // In-place checkout, unlike a lateral cd, touches this worktree's files.
         // `git checkout <branch>` *carries* uncommitted changes across on success,
         // which for *tracked* edits would silently move your work onto another
@@ -2276,8 +2287,16 @@ fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str) -> Result<()> {
                 "worktree has uncommitted changes to tracked files — commit or stash before checking out '{branch}' in place"
             );
         }
-        git_run(repo.cwd(), &["checkout", branch])?;
-        eprintln!("{check} {branch}: checked out in place");
+        match &tracking {
+            Some(t) => {
+                git_run(repo.cwd(), &["checkout", "-b", branch, "--track", t])?;
+                eprintln!("{check} {branch}: checked out in place, tracking {t}");
+            }
+            None => {
+                git_run(repo.cwd(), &["checkout", branch])?;
+                eprintln!("{check} {branch}: checked out in place");
+            }
+        }
     }
     Ok(())
 }
