@@ -1919,6 +1919,12 @@ fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str) -> Result<()> {
         // stdout path only in the cd case — the wrapper cd's when it's non-empty.
         println!("{}", w.path.display());
     } else {
+        // Local branches only: a missing name would make `git checkout` treat it
+        // as a pathspec (restore files, report success), and a tag/SHA/remote
+        // ref would silently detach HEAD.
+        if !branch_exists(repo, branch) {
+            bail!("no local branch '{branch}' — use `tonic add {branch}` for a remote branch");
+        }
         // In-place checkout, unlike a lateral cd, touches this worktree's files.
         // `git checkout <branch>` *carries* uncommitted changes across on success,
         // which for *tracked* edits would silently move your work onto another

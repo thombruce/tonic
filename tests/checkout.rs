@@ -60,3 +60,17 @@ fn bare_dir_cds_but_wont_check_out_in_place() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("no worktree"), "{}", stderr(&out));
 }
+
+#[test]
+fn refuses_a_name_that_is_not_a_local_branch() {
+    let s = Scratch::new();
+    s.git(&["tag", "t1"]);
+    // m0 is a tracked file: git would restore it as a pathspec and exit 0;
+    // t1 is a tag: git would detach HEAD.
+    for name in ["m0", "t1", "nope"] {
+        let out = s.tonic(&["checkout", name]);
+        assert!(!out.status.success(), "{name} should be refused");
+        assert!(stderr(&out).contains("no local branch"), "{}", stderr(&out));
+        assert_eq!(s.git(&["branch", "--show-current"]), "main");
+    }
+}
