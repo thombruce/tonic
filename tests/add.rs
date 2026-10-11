@@ -227,3 +227,12 @@ fn refused_add_prints_no_base_warning() {
     assert!(!out.status.success());
     assert!(!stderr(&out).contains("detached"), "{}", stderr(&out));
 }
+
+#[test]
+fn add_allows_a_name_that_prefixes_a_blob() {
+    let s = Scratch::new();
+    // only commits count: an 8-char prefix of a *blob* ID is a usable name
+    let blob = s.git(&["rev-parse", "HEAD:m0"])[..8].to_string();
+    let out = s.tonic(&["add", &blob]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}

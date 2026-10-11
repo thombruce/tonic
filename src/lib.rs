@@ -261,8 +261,17 @@ fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
     // ponytail: a bare SHA only counts at 7+ chars (git's default abbrev) —
     // short word-like names (`cafe`, `fade`) would otherwise match a big repo's
     // abbreviated SHAs at random. Refs (tags like `2024`) count at any length.
-    if full.is_empty() && name.len() < 7 {
-        return Ok(());
+    if full.is_empty() {
+        // `--verify` alone accepts any object; a blob/tree prefix isn't a commit.
+        let commit = format!("{name}^{{commit}}");
+        let is_commit = git_capture(
+            Some(repo.cwd()),
+            &["rev-parse", "--verify", "--quiet", &commit],
+        )
+        .is_ok();
+        if name.len() < 7 || !is_commit {
+            return Ok(());
+        }
     }
     bail!(
         "'{name}' already names a commit (a tag, SHA or other ref), not a branch\n       for a new branch from it: tonic add <new-name> --base {name}"
