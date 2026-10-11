@@ -70,7 +70,28 @@ fn refuses_a_name_that_is_not_a_local_branch() {
     for name in ["m0", "t1", "nope"] {
         let out = s.tonic(&["checkout", name]);
         assert!(!out.status.success(), "{name} should be refused");
-        assert!(stderr(&out).contains("no local branch"), "{}", stderr(&out));
+        assert!(
+            stderr(&out).contains("not a local branch"),
+            "{}",
+            stderr(&out)
+        );
+        assert!(!stderr(&out).contains("tonic add"), "no remote, no hint");
         assert_eq!(s.git(&["branch", "--show-current"]), "main");
     }
+}
+
+#[test]
+fn remote_only_branch_hints_at_add() {
+    let s = Scratch::new();
+    let origin = s.root_join("origin.git");
+    s.git(&["clone", "--bare", "-q", ".", origin.to_str().unwrap()]);
+    s.git(&["remote", "add", "origin", origin.to_str().unwrap()]);
+    s.git(&["branch", "r"]);
+    s.git(&["push", "-q", "origin", "r"]);
+    s.git(&["branch", "-D", "r"]);
+    s.git(&["fetch", "-q", "origin"]);
+
+    let out = s.tonic(&["checkout", "r"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("tonic add r"), "{}", stderr(&out));
 }
