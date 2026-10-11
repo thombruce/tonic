@@ -758,14 +758,6 @@ struct PrHead {
     /// `null` (or an empty login) when the fork has been deleted.
     #[serde(default)]
     head_repository_owner: Option<PrOwner>,
-    #[serde(default)]
-    head_repository: Option<PrRepo>,
-}
-
-#[derive(Deserialize)]
-struct PrRepo {
-    #[serde(default)]
-    name: String,
 }
 
 #[derive(Deserialize)]
@@ -788,7 +780,7 @@ pub fn add_pr(number: u32) -> Result<()> {
             "view",
             &n,
             "--json",
-            "headRefName,isCrossRepository,headRepositoryOwner,headRepository",
+            "headRefName,isCrossRepository,headRepositoryOwner",
         ],
     )?;
     let pr: PrHead = serde_json::from_str(&json).context("reading the PR from gh")?;
@@ -799,11 +791,8 @@ pub fn add_pr(number: u32) -> Result<()> {
         .head_repository_owner
         .map(|o| o.login)
         .filter(|l| !l.is_empty());
-    let head_repo = pr.head_repository.map(|r| r.name).unwrap_or_default();
     let name = match (pr.is_cross_repository, owner) {
         (false, _) => pr.head_ref_name,
-        // your own fork (fork workflow): it's your branch, keep its name
-        (true, Some(login)) if remote_hosts_repo(&repo, &login, &head_repo) => pr.head_ref_name,
         (true, Some(login)) => format!("{login}/{}", pr.head_ref_name),
         // deleted fork: no owner to namespace by, and the bare head could be `main`
         (true, None) => pr_name.clone(),
@@ -825,7 +814,10 @@ pub fn add_pr(number: u32) -> Result<()> {
             .map(|w| w.path)
     });
     if let Some(p) = existing {
-        ensure_present(&p, &name)?;
+        // name the folder in the hint: `tonic rm <dir>` always resolves, while
+        // the branch may no longer be checked out there
+        let dir = p.file_name().and_then(|d| d.to_str()).unwrap_or(&name);
+        ensure_present(&p, dir)?;
         eprintln!(
             "{} PR #{n} ({name}): switched to its worktree",
             "✓".if_supports_color(Stream::Stderr, |t| t.green())
@@ -856,27 +848,6 @@ pub fn add_pr(number: u32) -> Result<()> {
         return Err(e);
     }
     finish_add(&repo, &cfg, &name, &path, Some(format!("PR #{n}")))
-}
-
-/// True if any configured remote's URL is `<owner>/<name>` (https or scp form,
-/// `.git` optional; case-insensitive, as GitHub is).
-fn remote_hosts_repo(repo: &Repo, owner: &str, name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-    let want = format!("{owner}/{name}").to_lowercase();
-    git_capture(
-        Some(repo.cwd()),
-        &["config", "--get-regexp", r"^remote\..*\.url$"],
-    )
-    .unwrap_or_default()
-    .lines()
-    .filter_map(|l| l.split_whitespace().nth(1))
-    .any(|url| {
-        let url = url.to_lowercase();
-        let url = url.trim_end_matches('/').trim_end_matches(".git");
-        url.ends_with(&format!("/{want}")) || url.ends_with(&format!(":{want}"))
-    })
 }
 
 /// The forge CLI for origin's host. ponytail: a substring check on the URL —

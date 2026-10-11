@@ -53,7 +53,7 @@ impl Forge {
 
     fn json(head: &str, fork_owner: Option<&str>) -> String {
         format!(
-            r#"{{"headRefName":"{head}","isCrossRepository":{},"headRepositoryOwner":{{"login":"{}"}},"headRepository":{{"name":"r"}}}}"#,
+            r#"{{"headRefName":"{head}","isCrossRepository":{},"headRepositoryOwner":{{"login":"{}"}}}}"#,
             fork_owner.is_some(),
             fork_owner.unwrap_or("o")
         )
@@ -241,24 +241,24 @@ fn rerun_finds_the_pr_folder_after_its_head_moved() {
 }
 
 #[test]
-fn pr_from_your_own_fork_keeps_its_branch_name() {
+fn missing_pr_folder_hint_names_a_command_that_works() {
     let f = Forge::new();
-    // fork workflow: origin is *your* fork (me/r), PRs go to the base repo
-    f.s.git(&["remote", "set-url", "origin", "git@github.com:Me/r.git"]);
-    f.s.tonic(&["add", "feat"]);
-    let out = f.run(
-        &["add", "--pr", "7"],
-        &Forge::json("feat", Some("me")),
-        false,
-    );
-    assert!(out.status.success(), "{}", stderr(&out));
-    // your `feat` worktree, not a duplicate `me/feat`
+    let json = Forge::json("feat", Some("alice"));
+    f.run(&["add", "--pr", "7"], &json, false);
+    let wt = f.s.wt("pr-7");
+    f.s.git_in(&wt, &["checkout", "-q", "--detach"]); // off alice/feat
+    std::fs::remove_dir_all(&wt).unwrap();
+
+    let out = f.run(&["add", "--pr", "7"], &json, false);
+    assert!(!out.status.success());
     assert!(
-        stdout(&out).trim().ends_with("repo-feat"),
+        stderr(&out).contains("tonic rm repo-pr-7"),
         "{}",
-        stdout(&out)
+        stderr(&out)
     );
-    assert!(!f.log().contains("checkout"), "{}", f.log());
+    // ...and that command actually cleans it up
+    let out = f.s.tonic(&["rm", "repo-pr-7"]);
+    assert!(out.status.success(), "{}", stderr(&out));
 }
 
 #[test]
