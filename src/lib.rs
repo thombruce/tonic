@@ -755,11 +755,14 @@ fn finish_add(
 struct PrHead {
     head_ref_name: String,
     is_cross_repository: bool,
-    head_repository_owner: PrOwner,
+    /// `null` (or an empty login) when the fork has been deleted.
+    #[serde(default)]
+    head_repository_owner: Option<PrOwner>,
 }
 
 #[derive(Deserialize)]
 struct PrOwner {
+    #[serde(default)]
     login: String,
 }
 
@@ -783,15 +786,34 @@ pub fn add_pr(number: u32) -> Result<()> {
     let pr: PrHead = serde_json::from_str(&json).context("reading the PR from gh")?;
     // A fork's head branch is often the contributor's `main`; namespace fork
     // PRs by owner so they never collide with (or resolve to) your own branches.
-    let name = if pr.is_cross_repository {
-        format!("{}/{}", pr.head_repository_owner.login, pr.head_ref_name)
-    } else {
-        pr.head_ref_name
+    let pr_name = format!("pr-{n}");
+    let owner = pr
+        .head_repository_owner
+        .map(|o| o.login)
+        .filter(|l| !l.is_empty());
+    let name = match (pr.is_cross_repository, owner) {
+        (false, _) => pr.head_ref_name,
+        (true, Some(login)) => format!("{login}/{}", pr.head_ref_name),
+        // deleted fork: no owner to namespace by, and the bare head could be `main`
+        (true, None) => pr_name.clone(),
     };
 
-    // Already checked out somewhere → go there, like `checkout`.
+    let path = match cfg.pr_worktree_path.as_deref() {
+        Some(t) => path_from_template(&repo, t, &name, &[("pr", &n)]),
+        None => worktree_path_for(&repo, &cfg, &pr_name),
+    };
+
+    // Already has a worktree → go there, like `checkout`: one with the branch
+    // checked out, or the PR's own folder even if its HEAD has since moved.
     let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
-    if let Some(p) = parse_worktree(&list, &name) {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let existing = parse_worktree(&list, &name).or_else(|| {
+        parse_worktrees(&list)
+            .into_iter()
+            .find(|w| !w.bare && canon(&w.path) == canon(&path))
+            .map(|w| w.path)
+    });
+    if let Some(p) = existing {
         ensure_present(&p, &name)?;
         eprintln!(
             "{} PR #{n} ({name}): switched to its worktree",
@@ -801,11 +823,6 @@ pub fn add_pr(number: u32) -> Result<()> {
         return Ok(());
     }
 
-    let pr_name = format!("pr-{n}");
-    let path = match cfg.pr_worktree_path.as_deref() {
-        Some(t) => path_from_template(&repo, t, &name, &[("pr", &n)]),
-        None => worktree_path_for(&repo, &cfg, &pr_name),
-    };
     if path.exists() {
         bail!("worktree path already exists: {}", path.display());
     }

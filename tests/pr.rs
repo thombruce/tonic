@@ -200,3 +200,35 @@ fn pr_conflicts_with_a_branch_and_branch_flags() {
         );
     }
 }
+
+#[test]
+fn deleted_fork_falls_back_to_a_pr_branch_name() {
+    let f = Forge::new();
+    // a deleted fork: still cross-repo, but no owner (null, or an empty login)
+    for (n, owner) in [("8", "null"), ("9", r#"{"login":""}"#)] {
+        let json = format!(
+            r#"{{"headRefName":"main","isCrossRepository":true,"headRepositoryOwner":{owner}}}"#
+        );
+        let out = f.run(&["add", "--pr", n], &json, false);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let wt = f.s.wt(&format!("pr-{n}"));
+        assert_eq!(
+            f.s.git_in(&wt, &["branch", "--show-current"]),
+            format!("pr-{n}")
+        );
+    }
+}
+
+#[test]
+fn rerun_finds_the_pr_folder_after_its_head_moved() {
+    let f = Forge::new();
+    let json = Forge::json("feat", None);
+    f.run(&["add", "--pr", "7"], &json, false);
+    let wt = f.s.wt("pr-7");
+    f.s.git_in(&wt, &["checkout", "-q", "--detach"]); // e.g. after a rebase or `gh stack checkout`
+
+    let out = f.run(&["add", "--pr", "7"], &json, false);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(PathBuf::from(stdout(&out).trim()), wt);
+    assert_eq!(f.log().matches("pr checkout").count(), 1, "{}", f.log());
+}
