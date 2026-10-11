@@ -114,3 +114,31 @@ fn tag_refusal_suggests_detach() {
         stderr(&out)
     );
 }
+
+#[test]
+fn detach_refuses_a_local_branch_name_but_takes_heads_prefix() {
+    let s = Scratch::new();
+    // feat checked out in a dir that doesn't spell its name: `rm feat` would hit
+    // that worktree, not a detached `repo-feat`, so the name must be refused
+    s.git(&["branch", "feat"]);
+    let elsewhere = s.root_join("elsewhere");
+    s.git(&["worktree", "add", "-q", elsewhere.to_str().unwrap(), "feat"]);
+    for name in ["feat", "main"] {
+        let out = s.tonic(&["add", "--detach", name]);
+        assert!(!out.status.success(), "{name} should be refused");
+        assert!(
+            stderr(&out).contains("is a local branch"),
+            "{}",
+            stderr(&out)
+        );
+        assert!(!s.wt(name).exists());
+    }
+
+    // the suggested spelling works and resolves by that name
+    let out = s.tonic(&["add", "--detach", "heads/feat"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = s.tonic(&["rm", "heads/feat"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!s.wt("heads/feat").exists());
+    assert!(elsewhere.exists(), "feat's real worktree must survive");
+}

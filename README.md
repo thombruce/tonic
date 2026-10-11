@@ -228,7 +228,9 @@ no branch: for reading a release, reproducing a bug at a version, or building an
 old version beside current work. It gets the same path template (`repo-v1.2`,
 `/` flattened), `.worktreeinclude` transfer and `post_create` hooks as a branch
 worktree; in hooks, `{branch}` is the ref as you typed it. `tonic cd v1.2` and
-`tonic rm v1.2` find it by that name.
+`tonic rm v1.2` find it by that name. A local branch name is refused (`cd`/`rm`
+would find the branch's worktree instead); for a detached snapshot of a branch,
+use `tonic add --detach heads/main` or its SHA.
 
 When a new branch falls back to `HEAD` and that HEAD isn't a plain branch
 checkout, tonic warns (it never silently guesses a surprising base):

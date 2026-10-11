@@ -530,6 +530,15 @@ pub fn add(
     // branch. `branch` is the ref here; it names the path and is hooks' {branch}.
     // clap rejects it alongside -b/--base/--remote.
     if detach {
+        // A detached worktree named after a local branch would be shadowed for
+        // `cd`/`rm`: `resolve_worktree` matches a checked-out branch first, so
+        // `rm feat` could remove feat's real worktree instead. Refuse every local
+        // branch name, not just checked-out ones — one can be checked out later.
+        if branch_exists(&repo, branch) {
+            bail!(
+                "'{branch}' is a local branch; a detached worktree named after it would be shadowed for cd/rm\n       for a detached snapshot: tonic add --detach heads/{branch} (or its SHA)"
+            );
+        }
         if fetch {
             fetch_remotes(&repo, None);
         }
