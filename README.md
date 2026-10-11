@@ -57,6 +57,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 
 ```
 tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
+tonic add --detach <ref>       # a detached worktree at a tag, SHA or ref (no branch)
 tonic list [-v|--porcelain|--json]  # list worktrees (alias: ls; -v: full breakdown; --porcelain/--json: machine-readable)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic checkout <branch>        # cd to the branch's worktree if it has one, else check it out in place
@@ -217,9 +218,19 @@ have no effect when checking out an existing local or remote branch.
 
 A name that already refers to a commit (a tag, a SHA, or a ref like `origin/x`)
 is refused rather than turned into a new branch at `HEAD` with an ambiguous name.
-To branch from it, pick a new name: `tonic add hotfix --base v1.2`. (Short
+For a worktree *at* it, use `tonic add --detach v1.2`; to branch from it, pick a
+new name: `tonic add hotfix --base v1.2`. (Short
 all-hex names such as `cafe` are allowed unless they're an actual tag, so
 word-like branch names don't collide with abbreviated SHAs.)
+
+`--detach <ref>` makes a worktree at any tag, SHA or ref with a detached HEAD and
+no branch: for reading a release, reproducing a bug at a version, or building an
+old version beside current work. It gets the same path template (`repo-v1.2`,
+`/` flattened), `.worktreeinclude` transfer and `post_create` hooks as a branch
+worktree; in hooks, `{branch}` is the ref as you typed it. `tonic cd v1.2` and
+`tonic rm v1.2` find it by that name. A local branch name is refused (`cd`/`rm`
+would find the branch's worktree instead); for a detached snapshot of a branch,
+use `tonic add --detach heads/main` or its SHA.
 
 When a new branch falls back to `HEAD` and that HEAD isn't a plain branch
 checkout, tonic warns (it never silently guesses a surprising base):

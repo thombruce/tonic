@@ -276,7 +276,7 @@ fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
         }
     }
     bail!(
-        "'{name}' already names a commit (a tag, SHA or other ref), not a branch\n       for a new branch from it: tonic add <new-name> --base {name}"
+        "'{name}' already names a commit (a tag, SHA or other ref), not a branch\n       for a worktree at it: tonic add --detach {name}\n       for a new branch from it: tonic add <new-name> --base {name}"
     )
 }
 
@@ -515,6 +515,7 @@ pub fn add(
     base: Option<&str>,
     remote: Option<&str>,
     fetch: bool,
+    detach: bool,
 ) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
@@ -523,6 +524,43 @@ pub fn add(
     let path = worktree_path_for(&repo, &cfg, branch);
     if path.exists() {
         bail!("worktree path already exists: {}", path.display());
+    }
+
+    // --detach (#107): a worktree at any commit-ish (tag, SHA, `origin/x`), no
+    // branch. `branch` is the ref here; it names the path and is hooks' {branch}.
+    // clap rejects it alongside -b/--base/--remote.
+    if detach {
+        // A detached worktree named after a local branch would be shadowed for
+        // `cd`/`rm`: `resolve_worktree` matches a checked-out branch first, so
+        // `rm feat` could remove feat's real worktree instead. Refuse every local
+        // branch name, not just checked-out ones — one can be checked out later.
+        if branch_exists(&repo, branch) {
+            bail!(
+                "'{branch}' is a local branch; a detached worktree named after it would be shadowed for cd/rm\n       for a detached snapshot: tonic add --detach heads/{branch} (or its SHA)"
+            );
+        }
+        if fetch {
+            fetch_remotes(&repo, None);
+        }
+        let commit = format!("{branch}^{{commit}}");
+        let Ok(short) = git_capture(
+            Some(repo.cwd()),
+            &["rev-parse", "--verify", "--quiet", "--short", &commit],
+        ) else {
+            bail!("'{branch}' doesn't name a commit");
+        };
+        let path_str = path.to_string_lossy();
+        git_run(
+            repo.cwd(),
+            &["worktree", "add", "--detach", &path_str, &commit],
+        )?;
+        return finish_add(
+            &repo,
+            &cfg,
+            branch,
+            &path,
+            Some(format!("detached at {short}")),
+        );
     }
 
     // `-b` and `--base` both mean "make a new branch" (from HEAD, or from base),
@@ -567,14 +605,7 @@ pub fn add(
     // been fetched is picked up (only on the remote-tracking path). Non-fatal —
     // offline still resolves against existing refs.
     if fetch && !force_new && !local {
-        let mut fargs = vec!["fetch", "--quiet"];
-        match remote {
-            Some(r) => fargs.push(r),
-            None => fargs.push("--all"),
-        }
-        if git_run(repo.cwd(), &fargs).is_err() {
-            eprintln!("warning: fetch failed; resolving with existing refs");
-        }
+        fetch_remotes(&repo, remote);
     }
 
     // Every non-local path creates a branch named `branch` (new or tracking).
@@ -642,19 +673,50 @@ pub fn add(
         let _ = git_run(repo.cwd(), &["config", &key, parent]);
     }
 
-    transfer_includes(&repo, &path, &cfg)?;
+    finish_add(
+        &repo,
+        &cfg,
+        branch,
+        &path,
+        tracking.map(|t| format!("tracking {t}")),
+    )
+}
+
+/// Fetch before resolving (#18), from `remote` or all remotes. Non-fatal —
+/// offline still resolves against existing refs.
+fn fetch_remotes(repo: &Repo, remote: Option<&str>) {
+    let mut fargs = vec!["fetch", "--quiet"];
+    match remote {
+        Some(r) => fargs.push(r),
+        None => fargs.push("--all"),
+    }
+    if git_run(repo.cwd(), &fargs).is_err() {
+        eprintln!("warning: fetch failed; resolving with existing refs");
+    }
+}
+
+/// The shared tail of `add` once the worktree exists: includes, post_create
+/// hooks, status, and the path on stdout. `note` is an extra status line.
+fn finish_add(
+    repo: &Repo,
+    cfg: &Config,
+    name: &str,
+    path: &Path,
+    note: Option<String>,
+) -> Result<()> {
+    transfer_includes(repo, path, cfg)?;
     // post_create is best-effort: a failing hook warns but doesn't abort (the
     // worktree exists), so `add` still prints the path and the wrapper cd's (#76).
-    run_hooks(&cfg, "post_create", &repo, branch, &path, false)?;
+    run_hooks(cfg, "post_create", repo, name, path, false)?;
 
     // Human status → stderr; the worktree path → stdout only, so the shell
     // integration (`tonic shell-init`) can `cd "$(tonic add ...)"`.
     eprintln!(
-        "{} created worktree for {branch}",
+        "{} created worktree for {name}",
         "✓".if_supports_color(Stream::Stderr, |t| t.green())
     );
-    if let Some(t) = tracking {
-        eprintln!("  tracking {t}");
+    if let Some(n) = note {
+        eprintln!("  {n}");
     }
     println!("{}", path.display());
     Ok(())
