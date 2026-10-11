@@ -245,10 +245,11 @@ maintainers").
   as the name), so `tonic cd pr-123` / `tonic rm pr-123` work. Set
   `pr_worktree_path` (placeholders `{repo}`, `{branch}`, `{pr}`) to name it
   differently, e.g. `"{repo}-{branch}"`.
-- **Branch:** the PR's head branch; for a PR from a fork, `<owner>/<branch>`
-  (e.g. `alice/main`), so it never collides with your own branches. A PR whose
-  fork was deleted, or whose name would shadow an existing ref (a tag, or
-  `alice/main` after you've fetched a remote named `alice`), gets `pr-<N>`.
+- **Branch:** the PR's head branch for a PR from the same repo (so an existing
+  worktree for it is found); `pr-<N>` for a PR from a fork, whose head name
+  (often the contributor's `main`) could collide with your own branches.
+  `git push` still goes to the fork. A same-repo head named like an existing ref
+  (e.g. a tag) also gets `pr-<N>`.
 - **Already checked out?** tonic `cd`s to that worktree instead.
 - **Hooks and `.worktreeinclude`** apply as for any new worktree; `{branch}` is
   the local branch name.

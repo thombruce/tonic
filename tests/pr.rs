@@ -51,12 +51,8 @@ impl Forge {
         Forge { s, bin, log }
     }
 
-    fn json(head: &str, fork_owner: Option<&str>) -> String {
-        format!(
-            r#"{{"headRefName":"{head}","isCrossRepository":{},"headRepositoryOwner":{{"login":"{}"}}}}"#,
-            fork_owner.is_some(),
-            fork_owner.unwrap_or("o")
-        )
+    fn json(head: &str, fork: bool) -> String {
+        format!(r#"{{"headRefName":"{head}","isCrossRepository":{fork}}}"#)
     }
 
     fn run(&self, args: &[&str], json: &str, fail: bool) -> Output {
@@ -85,7 +81,7 @@ impl Forge {
 #[test]
 fn same_repo_pr_gets_a_pr_named_worktree_on_its_head_branch() {
     let f = Forge::new();
-    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", None), false);
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", false), false);
     assert!(out.status.success(), "{}", stderr(&out));
     let wt = f.s.wt("pr-7");
     assert_eq!(PathBuf::from(stdout(&out).trim()), wt);
@@ -101,17 +97,18 @@ fn same_repo_pr_gets_a_pr_named_worktree_on_its_head_branch() {
 }
 
 #[test]
-fn fork_pr_branch_is_namespaced_by_owner() {
+fn fork_pr_gets_a_pr_n_branch() {
     let f = Forge::new();
     // the fork's head is its own `main` — must not collide with ours
-    let out = f.run(
-        &["add", "--pr", "8"],
-        &Forge::json("main", Some("alice")),
-        false,
-    );
+    let out = f.run(&["add", "--pr", "8"], &Forge::json("main", true), false);
     assert!(out.status.success(), "{}", stderr(&out));
     let wt = f.s.wt("pr-8");
-    assert_eq!(f.s.git_in(&wt, &["branch", "--show-current"]), "alice/main");
+    assert_eq!(f.s.git_in(&wt, &["branch", "--show-current"]), "pr-8");
+    assert!(
+        f.log().contains("pr checkout 8 --branch pr-8"),
+        "{}",
+        f.log()
+    );
     assert_eq!(
         f.s.git(&["branch", "--show-current"]),
         "main",
@@ -123,7 +120,7 @@ fn fork_pr_branch_is_namespaced_by_owner() {
 fn pr_already_checked_out_cds_there() {
     let f = Forge::new();
     f.s.tonic(&["add", "feat"]);
-    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", None), false);
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", false), false);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
         stdout(&out).trim().ends_with("repo-feat"),
@@ -141,7 +138,7 @@ fn pr_already_checked_out_cds_there() {
 #[test]
 fn failed_checkout_leaves_no_worktree() {
     let f = Forge::new();
-    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", None), true);
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", false), true);
     assert!(!out.status.success());
     assert!(!f.s.wt("pr-7").exists());
     assert!(!f.s.git(&["worktree", "list"]).contains("pr-7"));
@@ -155,7 +152,7 @@ fn pr_worktree_path_config_names_the_folder() {
         "pr_worktree_path = \"{repo}-{branch}-{pr}\"\n",
     )
     .unwrap();
-    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat/x", None), false);
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat/x", false), false);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(f.s.root_join("repo-feat-x-7").exists());
 }
@@ -164,7 +161,7 @@ fn pr_worktree_path_config_names_the_folder() {
 fn non_github_origin_and_missing_cli_are_refused() {
     let f = Forge::new();
     f.s.git(&["remote", "set-url", "origin", "https://gitlab.com/o/r.git"]);
-    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", None), false);
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", false), false);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("supports GitHub"), "{}", stderr(&out));
 
@@ -198,7 +195,7 @@ fn pr_conflicts_with_a_branch_and_branch_flags() {
         vec!["add", "--pr", "7", "-b"],
         vec!["add", "--pr", "7", "--detach"],
     ] {
-        let out = f.run(&args, &Forge::json("feat", None), false);
+        let out = f.run(&args, &Forge::json("feat", false), false);
         assert!(!out.status.success(), "{args:?} should conflict");
         assert!(
             stderr(&out).contains("cannot be used with"),
@@ -209,27 +206,9 @@ fn pr_conflicts_with_a_branch_and_branch_flags() {
 }
 
 #[test]
-fn deleted_fork_falls_back_to_a_pr_branch_name() {
-    let f = Forge::new();
-    // a deleted fork: still cross-repo, but no owner (null, or an empty login)
-    for (n, owner) in [("8", "null"), ("9", r#"{"login":""}"#)] {
-        let json = format!(
-            r#"{{"headRefName":"main","isCrossRepository":true,"headRepositoryOwner":{owner}}}"#
-        );
-        let out = f.run(&["add", "--pr", n], &json, false);
-        assert!(out.status.success(), "{}", stderr(&out));
-        let wt = f.s.wt(&format!("pr-{n}"));
-        assert_eq!(
-            f.s.git_in(&wt, &["branch", "--show-current"]),
-            format!("pr-{n}")
-        );
-    }
-}
-
-#[test]
 fn rerun_finds_the_pr_folder_after_its_head_moved() {
     let f = Forge::new();
-    let json = Forge::json("feat", None);
+    let json = Forge::json("feat", false);
     f.run(&["add", "--pr", "7"], &json, false);
     let wt = f.s.wt("pr-7");
     f.s.git_in(&wt, &["checkout", "-q", "--detach"]); // e.g. after a rebase or `gh stack checkout`
@@ -243,10 +222,10 @@ fn rerun_finds_the_pr_folder_after_its_head_moved() {
 #[test]
 fn missing_pr_folder_hint_names_a_command_that_works() {
     let f = Forge::new();
-    let json = Forge::json("feat", Some("alice"));
+    let json = Forge::json("feat", true);
     f.run(&["add", "--pr", "7"], &json, false);
     let wt = f.s.wt("pr-7");
-    f.s.git_in(&wt, &["checkout", "-q", "--detach"]); // off alice/feat
+    f.s.git_in(&wt, &["checkout", "-q", "--detach"]); // off pr-7
     std::fs::remove_dir_all(&wt).unwrap();
 
     let out = f.run(&["add", "--pr", "7"], &json, false);
@@ -270,7 +249,7 @@ fn bare_dir_pr_does_not_depend_on_the_bare_head() {
     let out = f.run_in(
         &bare,
         &["add", "--pr", "7"],
-        &Forge::json("feat", None),
+        &Forge::json("feat", false),
         false,
     );
     assert!(out.status.success(), "{}", stderr(&out));
@@ -281,11 +260,11 @@ fn bare_dir_pr_does_not_depend_on_the_bare_head() {
 }
 
 #[test]
-fn a_name_that_would_shadow_a_ref_falls_back_to_pr_n() {
+fn a_head_named_like_a_ref_falls_back_to_pr_n() {
     let f = Forge::new();
-    // fetched from a remote named `alice`: `alice/feat` already names a ref
-    f.s.git(&["update-ref", "refs/remotes/alice/feat", "HEAD"]);
-    let json = Forge::json("feat", Some("alice"));
+    // a same-repo head named like a tag: a branch `v2` would be ambiguous
+    f.s.git(&["tag", "v2"]);
+    let json = Forge::json("v2", false);
     let out = f.run(&["add", "--pr", "7"], &json, false);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
@@ -296,13 +275,4 @@ fn a_name_that_would_shadow_a_ref_falls_back_to_pr_n() {
     let again = f.run(&["add", "--pr", "7"], &json, false);
     assert!(again.status.success(), "{}", stderr(&again));
     assert_eq!(stdout(&again), stdout(&out));
-
-    // a same-repo head named like a tag
-    f.s.git(&["tag", "v2"]);
-    let out = f.run(&["add", "--pr", "8"], &Forge::json("v2", None), false);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(
-        f.s.git_in(&f.s.wt("pr-8"), &["branch", "--show-current"]),
-        "pr-8"
-    );
 }
