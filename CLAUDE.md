@@ -19,7 +19,7 @@ CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo test` and `carg
 
 ## Workflow
 
-Land changes via a short-lived branch and a PR to `main` — do not commit code changes straight to `main`. Let CI (fmt + test + clippy) go green on the PR, then squash-merge. Release version bumps and tagging (see Packaging & release) are the exception: they're the maintainer's release step and go directly on `main`.
+Land changes via a short-lived branch and a PR to `main` — do not commit code changes straight to `main`. Let CI (fmt + test + clippy) go green on the PR, then squash-merge. A user-visible change (feature, behaviour change, fix to released behaviour) adds a line under `## [Unreleased]` in `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings: Added/Changed/Fixed/Removed…) in the same PR; internal refactors and tests don't. Release version bumps and tagging (see Packaging & release) are the exception: they're the maintainer's release step and go directly on `main`.
 
 ## Architecture
 
@@ -63,7 +63,7 @@ Two source files. `src/main.rs` is a thin `clap` shell: each subcommand is a `Cm
 
 The crate is **published as `git-tonic`** (the name `tonic` was taken on crates.io by the gRPC crate); the installed binary is still `tonic` via `[[bin]]`. Keep `[lib] name = "tonic"` so `main.rs`'s `tonic::` paths resolve.
 
-Releases are cut by pushing a `vX.Y.Z` tag (`.github/workflows/release.yml`): it builds macOS/Linux × x86_64/aarch64 binaries (aarch64-linux via `cross`), attaches them to a GitHub Release, runs `cargo publish`, and bumps `Formula/tonic.rb` in `thombruce/homebrew-tap`. Needs repo secrets `CARGO_REGISTRY_TOKEN` and `HOMEBREW_TAP_TOKEN`. Bump `version` in `Cargo.toml` to match the tag before tagging.
+Releases are cut by pushing a `vX.Y.Z` tag (`.github/workflows/release.yml`): it builds macOS/Linux × x86_64/aarch64 binaries (aarch64-linux via `cross`), attaches them to a GitHub Release, runs `cargo publish`, and bumps `Formula/tonic.rb` in `thombruce/homebrew-tap`. Needs repo secrets `CARGO_REGISTRY_TOKEN` and `HOMEBREW_TAP_TOKEN`. Bump `version` in `Cargo.toml` to match the tag before tagging, and in the same commit rename `CHANGELOG.md`'s `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, open a fresh empty `[Unreleased]` above it, and update the compare links at the bottom. The GitHub Release notes take that version's section.
 
 ## Testing conventions
 
