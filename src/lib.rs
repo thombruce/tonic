@@ -17,6 +17,9 @@ struct Config {
     /// dir. Placeholders: {repo}, {branch}. Default: "{repo}-{branch}" (normal
     /// repo) or "{branch}" (bare).
     worktree_path: Option<String>,
+    /// Path template for `add --pr` worktrees. Placeholders: {repo}, {branch},
+    /// {pr}. Default: `worktree_path` with `pr-{pr}` as the branch (#27).
+    pr_worktree_path: Option<String>,
     /// Default start-point (any ref) for a *new* branch when `--base` isn't
     /// given; with neither, a new branch is created from HEAD. No effect when
     /// checking out an existing local or remote branch.
@@ -83,6 +86,9 @@ impl Config {
     fn merge(&mut self, higher: Config) {
         if higher.worktree_path.is_some() {
             self.worktree_path = higher.worktree_path;
+        }
+        if higher.pr_worktree_path.is_some() {
+            self.pr_worktree_path = higher.pr_worktree_path;
         }
         if higher.base.is_some() {
             self.base = higher.base;
@@ -243,7 +249,7 @@ fn branch_exists(repo: &Repo, branch: &str) -> bool {
 /// Refuse a new branch whose name already resolves to a commit — a tag, SHA,
 /// remote ref (`origin/x`) or `HEAD` (#106). git would create the branch at the
 /// start point, not at that commit, and leave the name ambiguous.
-fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
+fn names_a_ref(repo: &Repo, name: &str) -> bool {
     // Prints the full ref name for a ref (`refs/tags/2024`), nothing for a bare
     // SHA, and fails for a name that resolves to nothing.
     let Ok(full) = git_capture(
@@ -256,7 +262,7 @@ fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
             name,
         ],
     ) else {
-        return Ok(());
+        return false;
     };
     // ponytail: a bare SHA only counts at 7+ chars (git's default abbrev) —
     // short word-like names (`cafe`, `fade`) would otherwise match a big repo's
@@ -272,8 +278,15 @@ fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
             )
             .is_err()
         {
-            return Ok(());
+            return false;
         }
+    }
+    true
+}
+
+fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
+    if !names_a_ref(repo, name) {
+        return Ok(());
     }
     bail!(
         "'{name}' already names a commit (a tag, SHA or other ref), not a branch\n       for a worktree at it: tonic add --detach {name}\n       for a new branch from it: tonic add <new-name> --base {name}"
@@ -448,9 +461,21 @@ fn worktree_path_for(repo: &Repo, cfg: &Config, branch: &str) -> PathBuf {
         "{repo}-{branch}"
     };
     let template = cfg.worktree_path.as_deref().unwrap_or(default_template);
+    path_from_template(repo, template, branch, &[])
+}
+
+/// Render a worktree path template (`/` in the branch flattened to `-`, for the
+/// path only), resolved against the worktree base unless absolute.
+fn path_from_template(
+    repo: &Repo,
+    template: &str,
+    branch: &str,
+    extra: &[(&str, &str)],
+) -> PathBuf {
     let path_branch = branch.replace('/', "-");
-    let rendered = render(template, &[("repo", &repo.name), ("branch", &path_branch)]);
-    let p = PathBuf::from(&rendered);
+    let mut vars = vec![("repo", repo.name.as_str()), ("branch", &path_branch)];
+    vars.extend_from_slice(extra);
+    let p = PathBuf::from(render(template, &vars));
     if p.is_absolute() {
         p
     } else {
@@ -719,6 +744,166 @@ fn finish_add(
         eprintln!("  {n}");
     }
     println!("{}", path.display());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// add --pr (#27)
+// ---------------------------------------------------------------------------
+//
+// tonic makes the worktree; the forge's own CLI does the checkout inside it, so
+// the CLI resolves the PR's head (fork remote included) and sets up tracking —
+// `git push` works afterwards. The forge is picked from origin's URL so other
+// CLIs (glab, tea) can slot in as more arms; only GitHub (`gh`) so far.
+
+/// The head of a PR, as `gh pr view --json` reports it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrHead {
+    head_ref_name: String,
+    is_cross_repository: bool,
+}
+
+pub fn add_pr(number: u32) -> Result<()> {
+    let repo = Repo::discover()?;
+    let cfg = Config::load(&repo)?;
+    let cli = forge_cli(&repo)?;
+    let n = number.to_string();
+
+    let json = forge_capture(
+        cli,
+        repo.cwd(),
+        &["pr", "view", &n, "--json", "headRefName,isCrossRepository"],
+    )?;
+    let pr: PrHead = serde_json::from_str(&json).context("reading the PR from gh")?;
+    // Local branch: a same-repo PR's head *is* a branch on origin, so keep its
+    // name (an existing worktree for it is found). A fork's head name is the
+    // contributor's (often their `main`) and could collide with anything of
+    // ours, so fork PRs are `pr-N`; gh's pushremote still targets the fork.
+    let pr_name = format!("pr-{n}");
+    let name = if pr.is_cross_repository {
+        pr_name.clone()
+    } else {
+        pr.head_ref_name
+    };
+    // A new branch mustn't shadow another ref (#106), e.g. a head named like a
+    // tag. --pr can't pick a name, so fall back to `pr-N` rather than refuse; an
+    // existing local branch keeps its name (re-checking out a PR branch).
+    let name = if !branch_exists(&repo, &name) && names_a_ref(&repo, &name) {
+        // pr-N may already be ours from an earlier run — reuse it, don't refuse
+        if !branch_exists(&repo, &pr_name) {
+            refuse_ref_name(&repo, &pr_name)?;
+        }
+        pr_name.clone()
+    } else {
+        name
+    };
+
+    let path = match cfg.pr_worktree_path.as_deref() {
+        // a template naming no PR would map every PR to one folder, and the
+        // "already has a worktree" check would silently cd into another PR's
+        Some(t) if !t.contains("{pr}") && !t.contains("{branch}") => {
+            bail!("pr_worktree_path must contain {{pr}} or {{branch}} to keep PRs apart: {t}")
+        }
+        Some(t) => path_from_template(&repo, t, &name, &[("pr", &n)]),
+        None => worktree_path_for(&repo, &cfg, &pr_name),
+    };
+
+    // Already has a worktree → go there, like `checkout`: one with the branch
+    // checked out, or the PR's own folder even if its HEAD has since moved.
+    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let existing = parse_worktree(&list, &name).or_else(|| {
+        parse_worktrees(&list)
+            .into_iter()
+            .find(|w| !w.bare && canon(&w.path) == canon(&path))
+            .map(|w| w.path)
+    });
+    if let Some(p) = existing {
+        // name the folder in the hint: `tonic rm <dir>` always resolves, while
+        // the branch may no longer be checked out there
+        let dir = p.file_name().and_then(|d| d.to_str()).unwrap_or(&name);
+        ensure_present(&p, dir)?;
+        eprintln!(
+            "{} PR #{n} ({name}): switched to its worktree",
+            "✓".if_supports_color(Stream::Stderr, |t| t.green())
+        );
+        println!("{}", p.display());
+        return Ok(());
+    }
+
+    if path.exists() {
+        bail!("worktree path already exists: {}", path.display());
+    }
+    let path_str = path.to_string_lossy().into_owned();
+    // A temporary start point (the checkout moves HEAD off it). From the bare dir
+    // use the trunk: the bare repo's own HEAD may name a missing branch (#74).
+    let mut args = vec!["worktree", "add", "--detach", &path_str];
+    let trunk = if repo.root.is_none() {
+        default_branch(&repo, &cfg, &branch_tips(&repo))
+    } else {
+        None
+    };
+    if let Some(t) = trunk.as_deref() {
+        args.push(t);
+    }
+    git_run(repo.cwd(), &args)?;
+    // Undo on failure, so a failed checkout doesn't leave a stray worktree.
+    if let Err(e) = forge_run(cli, &path, &["pr", "checkout", &n, "--branch", &name]) {
+        let _ = git_run(repo.cwd(), &["worktree", "remove", "--force", &path_str]);
+        return Err(e);
+    }
+    finish_add(&repo, &cfg, &name, &path, Some(format!("PR #{n}")))
+}
+
+/// The forge CLI for origin's host. ponytail: a substring check on the URL —
+/// catches github.com and GitHub Enterprise hosts named `github.*`; parse the
+/// host properly if a non-GitHub URL containing "github" ever misroutes.
+fn forge_cli(repo: &Repo) -> Result<&'static str> {
+    let url = git_capture(Some(repo.cwd()), &["remote", "get-url", "origin"])
+        .map_err(|_| anyhow!("--pr needs an `origin` remote to find the forge"))?;
+    if url.contains("github") {
+        return Ok("gh");
+    }
+    bail!("--pr supports GitHub (via gh) so far; origin is {url}")
+}
+
+fn forge_command(cli: &str, dir: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new(cli);
+    cmd.args(args).current_dir(dir);
+    cmd
+}
+
+fn forge_spawn_error(cli: &str, e: &std::io::Error) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        anyhow!("{cli} not found on PATH — --pr needs the forge's CLI ({cli}) installed")
+    } else {
+        anyhow!("running {cli}: {e}")
+    }
+}
+
+/// Run the forge CLI and return its trimmed stdout; its stderr (errors, auth
+/// prompts) passes through to the user.
+fn forge_capture(cli: &str, dir: &Path, args: &[&str]) -> Result<String> {
+    let out = forge_command(cli, dir, args)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| forge_spawn_error(cli, &e))?;
+    if !out.status.success() {
+        bail!("{cli} {} failed", args.join(" "));
+    }
+    Ok(String::from_utf8(out.stdout)?.trim().to_string())
+}
+
+/// Run the forge CLI with its stdout routed to stderr (tonic's stdout carries
+/// only the path for the shell wrapper).
+fn forge_run(cli: &str, dir: &Path, args: &[&str]) -> Result<()> {
+    let mut cmd = forge_command(cli, dir, args);
+    redirect_stdout_to_stderr(&mut cmd);
+    let status = cmd.status().map_err(|e| forge_spawn_error(cli, &e))?;
+    if !status.success() {
+        bail!("{cli} {} failed", args.join(" "));
+    }
     Ok(())
 }
 

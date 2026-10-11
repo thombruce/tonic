@@ -12,7 +12,8 @@ enum Cmd {
     /// Create a worktree for BRANCH
     Add {
         /// Branch to check out in the new worktree (with --detach: any tag, SHA or ref)
-        branch: String,
+        #[arg(required_unless_present = "pr")]
+        branch: Option<String>,
         /// Create BRANCH as a new branch (from HEAD unless --base)
         #[arg(short = 'b', long = "new-branch")]
         new_branch: bool,
@@ -29,6 +30,9 @@ enum Cmd {
         /// Create a detached worktree at BRANCH, which may be any tag, SHA or ref
         #[arg(long, conflicts_with_all = ["new_branch", "base", "remote"])]
         detach: bool,
+        /// Check out pull request N into its own worktree, via the forge's CLI (gh)
+        #[arg(long, value_name = "N", conflicts_with_all = ["branch", "new_branch", "base", "remote", "fetch", "detach"])]
+        pr: Option<u32>,
     },
     /// List all worktrees
     #[command(visible_alias = "ls")]
@@ -99,14 +103,20 @@ fn main() -> anyhow::Result<()> {
             remote,
             fetch,
             detach,
-        } => tonic::add(
-            &branch,
-            new_branch,
-            base.as_deref(),
-            remote.as_deref(),
-            fetch,
-            detach,
-        ),
+            pr,
+        } => match (pr, branch) {
+            (Some(n), _) => tonic::add_pr(n),
+            (None, Some(branch)) => tonic::add(
+                &branch,
+                new_branch,
+                base.as_deref(),
+                remote.as_deref(),
+                fetch,
+                detach,
+            ),
+            // clap's required_unless_present rules this out
+            (None, None) => Err(anyhow::anyhow!("a branch or --pr is required")),
+        },
         Cmd::List {
             verbose,
             porcelain,
