@@ -202,3 +202,28 @@ fn add_allows_a_short_hex_word_that_happens_to_prefix_a_sha() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(s.wt(&prefix).exists());
 }
+
+#[test]
+fn add_refuses_a_short_hex_tag() {
+    let s = Scratch::new();
+    // the short-hex exemption is for bare SHAs only: a tag like `2024` is a ref
+    s.git(&["tag", "2024"]);
+    let out = s.tonic(&["add", "2024"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("already names a commit"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn refused_add_prints_no_base_warning() {
+    let s = Scratch::new();
+    s.git(&["tag", "v1"]);
+    s.git(&["checkout", "-q", "--detach"]);
+    // detached HEAD would warn about rooting the branch; the refusal comes first
+    let out = s.tonic(&["add", "v1"]);
+    assert!(!out.status.success());
+    assert!(!stderr(&out).contains("detached"), "{}", stderr(&out));
+}

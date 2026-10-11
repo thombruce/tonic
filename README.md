@@ -212,8 +212,8 @@ have no effect when checking out an existing local or remote branch.
 A name that already refers to a commit (a tag, a SHA, or a ref like `origin/x`)
 is refused rather than turned into a new branch at `HEAD` with an ambiguous name.
 To branch from it, pick a new name: `tonic add hotfix --base v1.2`. (Short
-all-hex names such as `cafe` are allowed, so word-like branch names don't collide
-with abbreviated SHAs.)
+all-hex names such as `cafe` are allowed unless they're an actual tag, so
+word-like branch names don't collide with abbreviated SHAs.)
 
 When a new branch falls back to `HEAD` and that HEAD isn't a plain branch
 checkout, tonic warns (it never silently guesses a surprising base):
