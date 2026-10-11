@@ -37,7 +37,10 @@ struct Forge {
 impl Forge {
     /// A repo whose origin is on GitHub, with the fake `gh` ready.
     fn new() -> Self {
-        let s = Scratch::new();
+        Self::on(Scratch::new())
+    }
+
+    fn on(s: Scratch) -> Self {
         s.git(&["remote", "add", "origin", "https://github.com/o/r.git"]);
         let bin = s.root_join("fakebin");
         std::fs::create_dir(&bin).unwrap();
@@ -50,16 +53,20 @@ impl Forge {
 
     fn json(head: &str, fork_owner: Option<&str>) -> String {
         format!(
-            r#"{{"headRefName":"{head}","isCrossRepository":{},"headRepositoryOwner":{{"login":"{}"}}}}"#,
+            r#"{{"headRefName":"{head}","isCrossRepository":{},"headRepositoryOwner":{{"login":"{}"}},"headRepository":{{"name":"r"}}}}"#,
             fork_owner.is_some(),
             fork_owner.unwrap_or("o")
         )
     }
 
     fn run(&self, args: &[&str], json: &str, fail: bool) -> Output {
+        self.run_in(&self.s.repo, args, json, fail)
+    }
+
+    fn run_in(&self, dir: &std::path::Path, args: &[&str], json: &str, fail: bool) -> Output {
         let path = format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap());
         self.s.tonic_env(
-            &self.s.repo,
+            dir,
             args,
             &[
                 ("PATH", &path),
@@ -231,4 +238,44 @@ fn rerun_finds_the_pr_folder_after_its_head_moved() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(PathBuf::from(stdout(&out).trim()), wt);
     assert_eq!(f.log().matches("pr checkout").count(), 1, "{}", f.log());
+}
+
+#[test]
+fn pr_from_your_own_fork_keeps_its_branch_name() {
+    let f = Forge::new();
+    // fork workflow: origin is *your* fork (me/r), PRs go to the base repo
+    f.s.git(&["remote", "set-url", "origin", "git@github.com:Me/r.git"]);
+    f.s.tonic(&["add", "feat"]);
+    let out = f.run(
+        &["add", "--pr", "7"],
+        &Forge::json("feat", Some("me")),
+        false,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    // your `feat` worktree, not a duplicate `me/feat`
+    assert!(
+        stdout(&out).trim().ends_with("repo-feat"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!f.log().contains("checkout"), "{}", f.log());
+}
+
+#[test]
+fn bare_dir_pr_does_not_depend_on_the_bare_head() {
+    let f = Forge::on(Scratch::bare());
+    let bare = f.s.bare_dir();
+    // the bare repo's HEAD names a branch that doesn't exist (trunk is main)
+    f.s.git_in(&bare, &["symbolic-ref", "HEAD", "refs/heads/master"]);
+    let out = f.run_in(
+        &bare,
+        &["add", "--pr", "7"],
+        &Forge::json("feat", None),
+        false,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        f.s.git_in(&f.s.wt("pr-7"), &["branch", "--show-current"]),
+        "feat"
+    );
 }
