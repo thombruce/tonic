@@ -800,6 +800,11 @@ pub fn add_pr(number: u32) -> Result<()> {
     };
 
     let path = match cfg.pr_worktree_path.as_deref() {
+        // a template naming no PR would map every PR to one folder, and the
+        // "already has a worktree" check would silently cd into another PR's
+        Some(t) if !t.contains("{pr}") && !t.contains("{branch}") => {
+            bail!("pr_worktree_path must contain {{pr}} or {{branch}} to keep PRs apart: {t}")
+        }
         Some(t) => path_from_template(&repo, t, &name, &[("pr", &n)]),
         None => worktree_path_for(&repo, &cfg, &pr_name),
     };

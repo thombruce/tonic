@@ -276,3 +276,21 @@ fn a_head_named_like_a_ref_falls_back_to_pr_n() {
     assert!(again.status.success(), "{}", stderr(&again));
     assert_eq!(stdout(&again), stdout(&out));
 }
+
+#[test]
+fn pr_worktree_path_without_pr_or_branch_is_refused() {
+    let f = Forge::new();
+    std::fs::write(
+        f.s.repo.join("tonic.toml"),
+        "pr_worktree_path = \"{repo}-review\"\n",
+    )
+    .unwrap();
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", false), false);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("{pr} or {branch}"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!f.s.root_join("repo-review").exists());
+}

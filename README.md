@@ -244,7 +244,7 @@ maintainers").
 - **Folder:** `repo-pr-123` by default (the `worktree_path` layout with `pr-123`
   as the name), so `tonic cd pr-123` / `tonic rm pr-123` work. Set
   `pr_worktree_path` (placeholders `{repo}`, `{branch}`, `{pr}`) to name it
-  differently, e.g. `"{repo}-{branch}"`.
+  differently, e.g. `"{repo}-{branch}"`. It must contain `{pr}` or `{branch}`.
 - **Branch:** the PR's head branch for a PR from the same repo (so an existing
   worktree for it is found); `pr-<N>` for a PR from a fork, whose head name
   (often the contributor's `main`) could collide with your own branches.
