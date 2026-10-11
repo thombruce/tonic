@@ -1,0 +1,62 @@
+//! `tonic checkout <branch>` (#89): cd-or-checkout for any branch — the
+//! generalisation of the nav commands' `goto` beyond stack moves.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice
+)]
+
+mod common;
+use common::{Scratch, stderr, stdout};
+
+#[test]
+fn branch_with_a_worktree_prints_its_path() {
+    let s = Scratch::new();
+    s.tonic(&["add", "a"]);
+    let out = s.tonic(&["checkout", "a"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        std::path::Path::new(stdout(&out).trim()),
+        s.wt("a").canonicalize().unwrap()
+    );
+    // lateral move: the invoking worktree is untouched
+    assert_eq!(s.git(&["branch", "--show-current"]), "main");
+}
+
+#[test]
+fn branch_without_a_worktree_checks_out_in_place() {
+    let s = Scratch::new();
+    s.git(&["branch", "x"]);
+    let out = s.tonic(&["checkout", "x"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).trim().is_empty(), "in-place prints no path");
+    assert_eq!(s.git(&["branch", "--show-current"]), "x");
+}
+
+#[test]
+fn in_place_refuses_tracked_changes() {
+    let s = Scratch::new();
+    s.git(&["branch", "x"]);
+    std::fs::write(s.repo.join("m0"), "edited").unwrap();
+    let out = s.tonic(&["checkout", "x"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("uncommitted"), "{}", stderr(&out));
+    assert_eq!(s.git(&["branch", "--show-current"]), "main");
+}
+
+#[test]
+fn bare_dir_cds_but_wont_check_out_in_place() {
+    let s = Scratch::bare();
+    s.tonic(&["add", "a"]);
+    let out = s.tonic_in(&s.bare_dir(), &["checkout", "a"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).trim().ends_with("a"), "{}", stdout(&out));
+
+    s.git(&["branch", "x"]);
+    let out = s.tonic_in(&s.bare_dir(), &["checkout", "x"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("no worktree"), "{}", stderr(&out));
+}

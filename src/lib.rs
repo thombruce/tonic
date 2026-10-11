@@ -1890,12 +1890,31 @@ fn tip_of(
     }
 }
 
+/// Put me on `branch`, wherever it lives (#89): cd-or-checkout for any branch,
+/// not just a stack step. A lateral cd works from anywhere (even the bare dir,
+/// like `cd`); an in-place checkout needs a worktree to check out into.
+pub fn checkout(branch: &str) -> Result<()> {
+    let repo = Repo::discover()?;
+    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+    let worktrees = parse_worktrees(&list);
+    let has_wt = worktrees
+        .iter()
+        .any(|w| !w.bare && !w.detached && w.label == branch);
+    if repo.root.is_none() && !has_wt {
+        bail!("'{branch}' has no worktree — run from inside a worktree to check it out in place");
+    }
+    goto(&repo, &worktrees, branch)
+}
+
 /// Move to `branch`, cd-or-checkout: if it has a worktree, print its path so the
 /// shell wrapper cd's there (lateral); otherwise `git checkout` it in place in
 /// the current worktree (vertical). git's own refusal handles a dirty tree.
 fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str) -> Result<()> {
     let check = "✓".if_supports_color(Stream::Stderr, |t| t.green());
-    if let Some(w) = worktrees.iter().find(|w| !w.bare && w.label == branch) {
+    if let Some(w) = worktrees
+        .iter()
+        .find(|w| !w.bare && !w.detached && w.label == branch)
+    {
         eprintln!("{check} {branch}: switched to its worktree");
         // stdout path only in the cd case — the wrapper cd's when it's non-empty.
         println!("{}", w.path.display());
@@ -1942,7 +1961,7 @@ fn shell_wrapper(shell: &str) -> Option<&'static str> {
 // Uses `local`, so this is bash/zsh only — not portable to a pure POSIX sh.
 const BASH_ZSH_WRAPPER: &str = r#"tonic() {
     case "$1" in
-        add|cd|rm|remove|up|down|top|bottom)
+        add|cd|checkout|rm|remove|up|down|top|bottom)
             # --help prints to stdout at exit 0; don't capture it as a path.
             case " $* " in
                 *" -h "*|*" --help "*) command tonic "$@"; return ;;
@@ -1960,7 +1979,7 @@ const BASH_ZSH_WRAPPER: &str = r#"tonic() {
 
 const FISH_WRAPPER: &str = r#"function tonic
     switch $argv[1]
-        case add cd rm remove up down top bottom
+        case add cd checkout rm remove up down top bottom
             # --help prints to stdout at exit 0; don't capture it as a path.
             if contains -- -h $argv; or contains -- --help $argv
                 command tonic $argv
