@@ -263,13 +263,15 @@ fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
     // abbreviated SHAs at random. Refs (tags like `2024`) count at any length.
     if full.is_empty() {
         // `--verify` alone accepts any object; a blob/tree prefix isn't a commit.
+        // Length first, so a short name skips the second git call.
         let commit = format!("{name}^{{commit}}");
-        let is_commit = git_capture(
-            Some(repo.cwd()),
-            &["rev-parse", "--verify", "--quiet", &commit],
-        )
-        .is_ok();
-        if name.len() < 7 || !is_commit {
+        if name.len() < 7
+            || git_capture(
+                Some(repo.cwd()),
+                &["rev-parse", "--verify", "--quiet", &commit],
+            )
+            .is_err()
+        {
             return Ok(());
         }
     }
