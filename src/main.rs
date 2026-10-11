@@ -55,8 +55,11 @@ enum Cmd {
     },
     /// Switch to BRANCH: cd to its worktree if it has one, else check it out in place
     Checkout {
-        /// Branch to switch to
+        /// Branch to switch to (one only on a remote is created, tracking it)
         branch: String,
+        /// When BRANCH exists on multiple remotes, track this one
+        #[arg(long)]
+        remote: Option<String>,
     },
     /// Print a shell function for `cd` integration; eval it in your shell rc
     ShellInit {
@@ -132,7 +135,7 @@ fn main() -> anyhow::Result<()> {
             tonic::list(format, verbose)
         }
         Cmd::Cd { branch } => tonic::cd(&branch),
-        Cmd::Checkout { branch } => tonic::checkout(&branch),
+        Cmd::Checkout { branch, remote } => tonic::checkout(&branch, remote.as_deref()),
         Cmd::ShellInit { shell } => tonic::shell_init(&shell),
         Cmd::Completions { shell } => {
             // clap glue, not domain logic: generate needs the derived command tree.
