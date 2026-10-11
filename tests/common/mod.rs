@@ -126,6 +126,16 @@ impl Scratch {
         cmd.output().unwrap()
     }
 
+    /// Run `tonic` in `dir` with extra environment variables (e.g. a `PATH` with
+    /// a fake forge CLI first).
+    pub fn tonic_env(&self, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_tonic"));
+        cmd.args(args).current_dir(dir).env("NO_COLOR", "1");
+        self.isolate(&mut cmd);
+        cmd.envs(env.iter().copied());
+        cmd.output().unwrap()
+    }
+
     /// Point HOME / XDG_CONFIG_HOME at the tempdir so neither git's global config
     /// nor tonic's `~/.config/tonic/config.toml` (which could override
     /// `worktree_path` and break `wt()`) leaks in — the harness runs identically

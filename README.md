@@ -58,6 +58,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 ```
 tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
 tonic add --detach <ref>       # a detached worktree at a tag, SHA or ref (no branch)
+tonic add --pr <N>             # check out pull request N into its own worktree (via gh)
 tonic list [-v|--porcelain|--json]  # list worktrees (alias: ls; -v: full breakdown; --porcelain/--json: machine-readable)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
 tonic checkout <branch>        # cd to the branch's worktree if it has one, else check it out in place
@@ -232,6 +233,29 @@ worktree; in hooks, `{branch}` is the ref as you typed it. `tonic cd v1.2` and
 would find the branch's worktree instead); for a detached snapshot of a branch,
 use `tonic add --detach heads/main` or its SHA.
 
+### Pull requests: `tonic add --pr <N>`
+
+Checks out a pull request into its own worktree, ready to review or amend. tonic
+makes the worktree; the forge's own CLI does the checkout inside it, so the PR's
+branch tracks the right place (a contributor's fork included) and `git push`
+works afterwards, as far as the forge allows (for a fork, "allow edits by
+maintainers").
+
+- **Folder:** `repo-pr-123` by default (the `worktree_path` layout with `pr-123`
+  as the name), so `tonic cd pr-123` / `tonic rm pr-123` work. Set
+  `pr_worktree_path` (placeholders `{repo}`, `{branch}`, `{pr}`) to name it
+  differently, e.g. `"{repo}-{branch}"`.
+- **Branch:** the PR's head branch; for a PR from a fork, `<owner>/<branch>`
+  (e.g. `alice/main`), so it never collides with your own branches.
+- **Already checked out?** tonic `cd`s to that worktree instead.
+- **Hooks and `.worktreeinclude`** apply as for any new worktree; `{branch}` is
+  the local branch name.
+
+Supported forges: GitHub, via [`gh`](https://cli.github.com) (picked from
+`origin`'s URL; `gh` must be installed and authenticated). Other forges' CLIs are
+planned. A merged PR whose branch was deleted can't be checked out (`gh` itself
+can't fetch it).
+
 When a new branch falls back to `HEAD` and that HEAD isn't a plain branch
 checkout, tonic warns (it never silently guesses a surprising base):
 
@@ -338,3 +362,4 @@ is sourced from the `main/` (then `master/`) worktree.
 
 - Full gitignore glob semantics (patterns are top-level/relative, not recursive)
 - Windows symlinks (symlink mode is unix-only)
+- `--pr` on forges other than GitHub (GitLab via `glab`, Gitea/Forgejo via `tea`)

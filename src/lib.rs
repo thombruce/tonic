@@ -17,6 +17,9 @@ struct Config {
     /// dir. Placeholders: {repo}, {branch}. Default: "{repo}-{branch}" (normal
     /// repo) or "{branch}" (bare).
     worktree_path: Option<String>,
+    /// Path template for `add --pr` worktrees. Placeholders: {repo}, {branch},
+    /// {pr}. Default: `worktree_path` with `pr-{pr}` as the branch (#27).
+    pr_worktree_path: Option<String>,
     /// Default start-point (any ref) for a *new* branch when `--base` isn't
     /// given; with neither, a new branch is created from HEAD. No effect when
     /// checking out an existing local or remote branch.
@@ -83,6 +86,9 @@ impl Config {
     fn merge(&mut self, higher: Config) {
         if higher.worktree_path.is_some() {
             self.worktree_path = higher.worktree_path;
+        }
+        if higher.pr_worktree_path.is_some() {
+            self.pr_worktree_path = higher.pr_worktree_path;
         }
         if higher.base.is_some() {
             self.base = higher.base;
@@ -448,9 +454,21 @@ fn worktree_path_for(repo: &Repo, cfg: &Config, branch: &str) -> PathBuf {
         "{repo}-{branch}"
     };
     let template = cfg.worktree_path.as_deref().unwrap_or(default_template);
+    path_from_template(repo, template, branch, &[])
+}
+
+/// Render a worktree path template (`/` in the branch flattened to `-`, for the
+/// path only), resolved against the worktree base unless absolute.
+fn path_from_template(
+    repo: &Repo,
+    template: &str,
+    branch: &str,
+    extra: &[(&str, &str)],
+) -> PathBuf {
     let path_branch = branch.replace('/', "-");
-    let rendered = render(template, &[("repo", &repo.name), ("branch", &path_branch)]);
-    let p = PathBuf::from(&rendered);
+    let mut vars = vec![("repo", repo.name.as_str()), ("branch", &path_branch)];
+    vars.extend_from_slice(extra);
+    let p = PathBuf::from(render(template, &vars));
     if p.is_absolute() {
         p
     } else {
@@ -719,6 +737,136 @@ fn finish_add(
         eprintln!("  {n}");
     }
     println!("{}", path.display());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// add --pr (#27)
+// ---------------------------------------------------------------------------
+//
+// tonic makes the worktree; the forge's own CLI does the checkout inside it, so
+// the CLI resolves the PR's head (fork remote included) and sets up tracking —
+// `git push` works afterwards. The forge is picked from origin's URL so other
+// CLIs (glab, tea) can slot in as more arms; only GitHub (`gh`) so far.
+
+/// The head of a PR, as `gh pr view --json` reports it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrHead {
+    head_ref_name: String,
+    is_cross_repository: bool,
+    head_repository_owner: PrOwner,
+}
+
+#[derive(Deserialize)]
+struct PrOwner {
+    login: String,
+}
+
+pub fn add_pr(number: u32) -> Result<()> {
+    let repo = Repo::discover()?;
+    let cfg = Config::load(&repo)?;
+    let cli = forge_cli(&repo)?;
+    let n = number.to_string();
+
+    let json = forge_capture(
+        cli,
+        repo.cwd(),
+        &[
+            "pr",
+            "view",
+            &n,
+            "--json",
+            "headRefName,isCrossRepository,headRepositoryOwner",
+        ],
+    )?;
+    let pr: PrHead = serde_json::from_str(&json).context("reading the PR from gh")?;
+    // A fork's head branch is often the contributor's `main`; namespace fork
+    // PRs by owner so they never collide with (or resolve to) your own branches.
+    let name = if pr.is_cross_repository {
+        format!("{}/{}", pr.head_repository_owner.login, pr.head_ref_name)
+    } else {
+        pr.head_ref_name
+    };
+
+    // Already checked out somewhere → go there, like `checkout`.
+    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+    if let Some(p) = parse_worktree(&list, &name) {
+        ensure_present(&p, &name)?;
+        eprintln!(
+            "{} PR #{n} ({name}): switched to its worktree",
+            "✓".if_supports_color(Stream::Stderr, |t| t.green())
+        );
+        println!("{}", p.display());
+        return Ok(());
+    }
+
+    let pr_name = format!("pr-{n}");
+    let path = match cfg.pr_worktree_path.as_deref() {
+        Some(t) => path_from_template(&repo, t, &name, &[("pr", &n)]),
+        None => worktree_path_for(&repo, &cfg, &pr_name),
+    };
+    if path.exists() {
+        bail!("worktree path already exists: {}", path.display());
+    }
+    let path_str = path.to_string_lossy().into_owned();
+    git_run(repo.cwd(), &["worktree", "add", "--detach", &path_str])?;
+    // Undo on failure, so a failed checkout doesn't leave a stray worktree.
+    if let Err(e) = forge_run(cli, &path, &["pr", "checkout", &n, "--branch", &name]) {
+        let _ = git_run(repo.cwd(), &["worktree", "remove", "--force", &path_str]);
+        return Err(e);
+    }
+    finish_add(&repo, &cfg, &name, &path, Some(format!("PR #{n}")))
+}
+
+/// The forge CLI for origin's host. ponytail: a substring check on the URL —
+/// catches github.com and GitHub Enterprise hosts named `github.*`; parse the
+/// host properly if a non-GitHub URL containing "github" ever misroutes.
+fn forge_cli(repo: &Repo) -> Result<&'static str> {
+    let url = git_capture(Some(repo.cwd()), &["remote", "get-url", "origin"])
+        .map_err(|_| anyhow!("--pr needs an `origin` remote to find the forge"))?;
+    if url.contains("github") {
+        return Ok("gh");
+    }
+    bail!("--pr supports GitHub (via gh) so far; origin is {url}")
+}
+
+fn forge_command(cli: &str, dir: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new(cli);
+    cmd.args(args).current_dir(dir);
+    cmd
+}
+
+fn forge_spawn_error(cli: &str, e: &std::io::Error) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        anyhow!("{cli} not found on PATH — --pr needs the forge's CLI ({cli}) installed")
+    } else {
+        anyhow!("running {cli}: {e}")
+    }
+}
+
+/// Run the forge CLI and return its trimmed stdout; its stderr (errors, auth
+/// prompts) passes through to the user.
+fn forge_capture(cli: &str, dir: &Path, args: &[&str]) -> Result<String> {
+    let out = forge_command(cli, dir, args)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| forge_spawn_error(cli, &e))?;
+    if !out.status.success() {
+        bail!("{cli} {} failed", args.join(" "));
+    }
+    Ok(String::from_utf8(out.stdout)?.trim().to_string())
+}
+
+/// Run the forge CLI with its stdout routed to stderr (tonic's stdout carries
+/// only the path for the shell wrapper).
+fn forge_run(cli: &str, dir: &Path, args: &[&str]) -> Result<()> {
+    let mut cmd = forge_command(cli, dir, args);
+    redirect_stdout_to_stderr(&mut cmd);
+    let status = cmd.status().map_err(|e| forge_spawn_error(cli, &e))?;
+    if !status.success() {
+        bail!("{cli} {} failed", args.join(" "));
+    }
     Ok(())
 }
 

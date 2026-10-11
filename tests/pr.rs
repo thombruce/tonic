@@ -1,0 +1,202 @@
+//! `tonic add --pr N` (#27): tonic makes the worktree, the forge CLI checks the
+//! PR out inside it. Driven against a fake `gh` on PATH that logs its calls and
+//! plays back a canned PR, so no network or real forge is involved.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice
+)]
+
+mod common;
+use common::{Scratch, stderr, stdout};
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::process::Output;
+
+/// `pr view` prints $FAKE_PR_JSON; `pr checkout N --branch NAME` creates NAME at
+/// the worktree's HEAD (or fails when $FAKE_GH_FAIL=1). Every call is logged.
+const FAKE_GH: &str = r#"#!/bin/sh
+echo "$*" >> "$FAKE_GH_LOG"
+case "$1 $2" in
+  "pr view") printf '%s\n' "$FAKE_PR_JSON" ;;
+  "pr checkout")
+    [ "$FAKE_GH_FAIL" = 1 ] && { echo "gh: checkout failed" >&2; exit 1; }
+    git checkout -q -b "$5" ;;
+esac
+"#;
+
+struct Forge {
+    s: Scratch,
+    bin: PathBuf,
+    log: PathBuf,
+}
+
+impl Forge {
+    /// A repo whose origin is on GitHub, with the fake `gh` ready.
+    fn new() -> Self {
+        let s = Scratch::new();
+        s.git(&["remote", "add", "origin", "https://github.com/o/r.git"]);
+        let bin = s.root_join("fakebin");
+        std::fs::create_dir(&bin).unwrap();
+        let gh = bin.join("gh");
+        std::fs::write(&gh, FAKE_GH).unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let log = s.root_join("gh.log");
+        Forge { s, bin, log }
+    }
+
+    fn json(head: &str, fork_owner: Option<&str>) -> String {
+        format!(
+            r#"{{"headRefName":"{head}","isCrossRepository":{},"headRepositoryOwner":{{"login":"{}"}}}}"#,
+            fork_owner.is_some(),
+            fork_owner.unwrap_or("o")
+        )
+    }
+
+    fn run(&self, args: &[&str], json: &str, fail: bool) -> Output {
+        let path = format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap());
+        self.s.tonic_env(
+            &self.s.repo,
+            args,
+            &[
+                ("PATH", &path),
+                ("FAKE_GH_LOG", self.log.to_str().unwrap()),
+                ("FAKE_PR_JSON", json),
+                ("FAKE_GH_FAIL", if fail { "1" } else { "0" }),
+            ],
+        )
+    }
+
+    fn log(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+}
+
+#[test]
+fn same_repo_pr_gets_a_pr_named_worktree_on_its_head_branch() {
+    let f = Forge::new();
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", None), false);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let wt = f.s.wt("pr-7");
+    assert_eq!(PathBuf::from(stdout(&out).trim()), wt);
+    assert_eq!(f.s.git_in(&wt, &["branch", "--show-current"]), "feat");
+    assert!(
+        f.log().contains("pr checkout 7 --branch feat"),
+        "{}",
+        f.log()
+    );
+    // `tonic cd pr-7` finds it by the PR name
+    let out = f.s.tonic(&["cd", "pr-7"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn fork_pr_branch_is_namespaced_by_owner() {
+    let f = Forge::new();
+    // the fork's head is its own `main` — must not collide with ours
+    let out = f.run(
+        &["add", "--pr", "8"],
+        &Forge::json("main", Some("alice")),
+        false,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let wt = f.s.wt("pr-8");
+    assert_eq!(f.s.git_in(&wt, &["branch", "--show-current"]), "alice/main");
+    assert_eq!(
+        f.s.git(&["branch", "--show-current"]),
+        "main",
+        "ours untouched"
+    );
+}
+
+#[test]
+fn pr_already_checked_out_cds_there() {
+    let f = Forge::new();
+    f.s.tonic(&["add", "feat"]);
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", None), false);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).trim().ends_with("repo-feat"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        !f.log().contains("checkout"),
+        "no checkout expected:\n{}",
+        f.log()
+    );
+    assert!(!f.s.wt("pr-7").exists());
+}
+
+#[test]
+fn failed_checkout_leaves_no_worktree() {
+    let f = Forge::new();
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", None), true);
+    assert!(!out.status.success());
+    assert!(!f.s.wt("pr-7").exists());
+    assert!(!f.s.git(&["worktree", "list"]).contains("pr-7"));
+}
+
+#[test]
+fn pr_worktree_path_config_names_the_folder() {
+    let f = Forge::new();
+    std::fs::write(
+        f.s.repo.join("tonic.toml"),
+        "pr_worktree_path = \"{repo}-{branch}-{pr}\"\n",
+    )
+    .unwrap();
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat/x", None), false);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(f.s.root_join("repo-feat-x-7").exists());
+}
+
+#[test]
+fn non_github_origin_and_missing_cli_are_refused() {
+    let f = Forge::new();
+    f.s.git(&["remote", "set-url", "origin", "https://gitlab.com/o/r.git"]);
+    let out = f.run(&["add", "--pr", "7"], &Forge::json("feat", None), false);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("supports GitHub"), "{}", stderr(&out));
+
+    // GitHub origin but no gh on PATH: only git is reachable
+    f.s.git(&["remote", "set-url", "origin", "https://github.com/o/r.git"]);
+    let only_git = f.s.root_join("onlygit");
+    std::fs::create_dir(&only_git).unwrap();
+    let git = String::from_utf8(
+        std::process::Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(git.trim(), only_git.join("git")).unwrap();
+    let out = f.s.tonic_env(
+        &f.s.repo,
+        &["add", "--pr", "7"],
+        &[("PATH", only_git.to_str().unwrap())],
+    );
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("gh not found"), "{}", stderr(&out));
+}
+
+#[test]
+fn pr_conflicts_with_a_branch_and_branch_flags() {
+    let f = Forge::new();
+    for args in [
+        vec!["add", "--pr", "7", "feat"],
+        vec!["add", "--pr", "7", "-b"],
+        vec!["add", "--pr", "7", "--detach"],
+    ] {
+        let out = f.run(&args, &Forge::json("feat", None), false);
+        assert!(!out.status.success(), "{args:?} should conflict");
+        assert!(
+            stderr(&out).contains("cannot be used with"),
+            "{}",
+            stderr(&out)
+        );
+    }
+}
