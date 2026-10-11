@@ -23,7 +23,8 @@ review or amend (#27).
 - tonic makes the worktree and `gh` checks the PR out inside it, so tracking is
   set up and `git push` works, even for a PR from a fork (where the author
   allows maintainer edits).
-- The folder is `repo-pr-<N>`, so `tonic cd pr-<N>` and `tonic rm pr-<N>` work.
+- The folder is `repo-pr-<N>` (`pr-<N>` in a bare repo), so `tonic cd pr-<N>`
+  and `tonic rm pr-<N>` work.
   Set `pr_worktree_path` (placeholders `{repo}`, `{branch}`, `{pr}`) to name it
   differently.
 - The local branch is the PR's head branch for a PR from the same repo, and
@@ -53,9 +54,9 @@ building an old version beside your current work.
   Names that already refer to a tag, SHA or other ref are now refused, with
   pointers to `--detach` or `--base` (#106).
 - A worktree whose folder was deleted by hand is handled (#105):
-  - `cd`, `checkout`, `up`/`down`/`top`/`bottom` and `add --pr` used to print a
-    path that no longer existed. They now report the missing folder and suggest
-    `tonic rm`.
+  - `cd` and `up`/`down`/`top`/`bottom` used to print a path that no longer
+    existed. They now report the missing folder and suggest `tonic rm` (as do
+    the new `checkout` and `add --pr`).
   - `tonic rm` used to be blocked by a `pre_remove` hook, because the hook runs
     inside the folder. It now cleans up the leftover entry, skipping the hooks
     with a warning, and still deletes an empty branch.
