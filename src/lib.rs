@@ -249,7 +249,7 @@ fn branch_exists(repo: &Repo, branch: &str) -> bool {
 /// Refuse a new branch whose name already resolves to a commit — a tag, SHA,
 /// remote ref (`origin/x`) or `HEAD` (#106). git would create the branch at the
 /// start point, not at that commit, and leave the name ambiguous.
-fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
+fn names_a_ref(repo: &Repo, name: &str) -> bool {
     // Prints the full ref name for a ref (`refs/tags/2024`), nothing for a bare
     // SHA, and fails for a name that resolves to nothing.
     let Ok(full) = git_capture(
@@ -262,7 +262,7 @@ fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
             name,
         ],
     ) else {
-        return Ok(());
+        return false;
     };
     // ponytail: a bare SHA only counts at 7+ chars (git's default abbrev) —
     // short word-like names (`cafe`, `fade`) would otherwise match a big repo's
@@ -278,8 +278,15 @@ fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
             )
             .is_err()
         {
-            return Ok(());
+            return false;
         }
+    }
+    true
+}
+
+fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
+    if !names_a_ref(repo, name) {
+        return Ok(());
     }
     bail!(
         "'{name}' already names a commit (a tag, SHA or other ref), not a branch\n       for a worktree at it: tonic add --detach {name}\n       for a new branch from it: tonic add <new-name> --base {name}"
@@ -796,6 +803,16 @@ pub fn add_pr(number: u32) -> Result<()> {
         (true, Some(login)) => format!("{login}/{}", pr.head_ref_name),
         // deleted fork: no owner to namespace by, and the bare head could be `main`
         (true, None) => pr_name.clone(),
+    };
+    // A new branch mustn't shadow another ref (#106) — e.g. `alice/feature` once
+    // you've fetched a remote named `alice`, or a head named like a tag. --pr has
+    // no way to pick a name, so fall back to `pr-N` rather than refuse. An
+    // existing local branch keeps its name (re-checking out a PR branch).
+    let name = if !branch_exists(&repo, &name) && names_a_ref(&repo, &name) {
+        refuse_ref_name(&repo, &pr_name)?;
+        pr_name.clone()
+    } else {
+        name
     };
 
     let path = match cfg.pr_worktree_path.as_deref() {

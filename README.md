@@ -247,7 +247,8 @@ maintainers").
   differently, e.g. `"{repo}-{branch}"`.
 - **Branch:** the PR's head branch; for a PR from a fork, `<owner>/<branch>`
   (e.g. `alice/main`), so it never collides with your own branches. A PR whose
-  fork was deleted gets `pr-<N>`.
+  fork was deleted, or whose name would shadow an existing ref (a tag, or
+  `alice/main` after you've fetched a remote named `alice`), gets `pr-<N>`.
 - **Already checked out?** tonic `cd`s to that worktree instead.
 - **Hooks and `.worktreeinclude`** apply as for any new worktree; `{branch}` is
   the local branch name.

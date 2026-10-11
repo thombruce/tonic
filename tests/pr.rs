@@ -279,3 +279,29 @@ fn bare_dir_pr_does_not_depend_on_the_bare_head() {
         "feat"
     );
 }
+
+#[test]
+fn a_name_that_would_shadow_a_ref_falls_back_to_pr_n() {
+    let f = Forge::new();
+    // fetched from a remote named `alice`: `alice/feat` already names a ref
+    f.s.git(&["update-ref", "refs/remotes/alice/feat", "HEAD"]);
+    let out = f.run(
+        &["add", "--pr", "7"],
+        &Forge::json("feat", Some("alice")),
+        false,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        f.s.git_in(&f.s.wt("pr-7"), &["branch", "--show-current"]),
+        "pr-7"
+    );
+
+    // a same-repo head named like a tag
+    f.s.git(&["tag", "v2"]);
+    let out = f.run(&["add", "--pr", "8"], &Forge::json("v2", None), false);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        f.s.git_in(&f.s.wt("pr-8"), &["branch", "--show-current"]),
+        "pr-8"
+    );
+}
