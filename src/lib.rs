@@ -809,7 +809,10 @@ pub fn add_pr(number: u32) -> Result<()> {
     // no way to pick a name, so fall back to `pr-N` rather than refuse. An
     // existing local branch keeps its name (re-checking out a PR branch).
     let name = if !branch_exists(&repo, &name) && names_a_ref(&repo, &name) {
-        refuse_ref_name(&repo, &pr_name)?;
+        // pr-N may already be ours from an earlier run — reuse it, don't refuse
+        if !branch_exists(&repo, &pr_name) {
+            refuse_ref_name(&repo, &pr_name)?;
+        }
         pr_name.clone()
     } else {
         name

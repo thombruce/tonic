@@ -285,16 +285,17 @@ fn a_name_that_would_shadow_a_ref_falls_back_to_pr_n() {
     let f = Forge::new();
     // fetched from a remote named `alice`: `alice/feat` already names a ref
     f.s.git(&["update-ref", "refs/remotes/alice/feat", "HEAD"]);
-    let out = f.run(
-        &["add", "--pr", "7"],
-        &Forge::json("feat", Some("alice")),
-        false,
-    );
+    let json = Forge::json("feat", Some("alice"));
+    let out = f.run(&["add", "--pr", "7"], &json, false);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
         f.s.git_in(&f.s.wt("pr-7"), &["branch", "--show-current"]),
         "pr-7"
     );
+    // a re-run falls back to the same pr-7 (now a local branch) and cd's there
+    let again = f.run(&["add", "--pr", "7"], &json, false);
+    assert!(again.status.success(), "{}", stderr(&again));
+    assert_eq!(stdout(&again), stdout(&out));
 
     // a same-repo head named like a tag
     f.s.git(&["tag", "v2"]);
