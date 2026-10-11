@@ -240,6 +240,32 @@ fn branch_exists(repo: &Repo, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Refuse a new branch whose name already resolves to a commit — a tag, SHA,
+/// remote ref (`origin/x`) or `HEAD` (#106). git would create the branch at the
+/// start point, not at that commit, and leave the name ambiguous.
+fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
+    // ponytail: short all-hex names (`cafe`, `fade`) are word-like branch names
+    // that a big repo's abbreviated SHAs would match at random; a typed SHA is
+    // 7+ chars (git's default abbrev). Raise if anyone types shorter SHAs.
+    if name.len() < 7 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(());
+    }
+    let resolves = Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("{name}^{{commit}}"))
+        .current_dir(repo.cwd())
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if resolves {
+        bail!(
+            "'{name}' already names a commit (a tag, SHA or other ref), not a branch\n       for a new branch from it: tonic add <new-name> --base {name}"
+        );
+    }
+    Ok(())
+}
+
 /// Append the git args for creating a new branch from HEAD (or from `base`).
 fn new_branch_args(args: &mut Vec<String>, branch: &str, path: &str, base: Option<&str>) {
     args.extend(["-b".into(), branch.into(), path.to_string()]);
@@ -566,6 +592,12 @@ pub fn add(
         let (start, parent) = resolve_new_base(&repo, &cfg, effective_base);
         record_parent = parent;
         new_branch_args(&mut args, branch, &path_str, start.as_deref());
+    }
+
+    // Every non-local path creates a branch named `branch` (new or tracking).
+    // Checked after the optional fetch, so freshly fetched tags count.
+    if !local {
+        refuse_ref_name(&repo, branch)?;
     }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();

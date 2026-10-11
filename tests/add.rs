@@ -152,3 +152,53 @@ fn add_tracks_a_remote_only_branch() {
         stderr(&out)
     );
 }
+
+#[test]
+fn add_refuses_a_name_that_already_names_a_commit() {
+    let s = Scratch::new();
+    s.git(&["tag", "v1"]);
+    s.commit_in(&s.repo, "m1");
+    let sha = s.git(&["rev-parse", "HEAD~1"]);
+    let short = &sha[..7];
+    // a tag (with and without -b) and a full or 7-char SHA: git would make a new
+    // branch at HEAD named after the ref, not a worktree at that commit (#106)
+    for args in [
+        vec!["add", "v1"],
+        vec!["add", "-b", "v1"],
+        vec!["add", sha.as_str()],
+        vec!["add", short],
+    ] {
+        let out = s.tonic(&args);
+        assert!(!out.status.success(), "{args:?} should be refused");
+        assert!(
+            stderr(&out).contains("already names a commit"),
+            "{}",
+            stderr(&out)
+        );
+        assert!(
+            !s.wt(args.last().unwrap()).exists(),
+            "{args:?} made a worktree"
+        );
+    }
+    assert_eq!(
+        s.git(&["branch", "--list", "v1"]),
+        "",
+        "no branch v1 created"
+    );
+
+    // the real intent still works: a fresh name rooted at the tag
+    let out = s.tonic(&["add", "hotfix", "--base", "v1"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(s.git(&["rev-parse", "hotfix"]), sha);
+}
+
+#[test]
+fn add_allows_a_short_hex_word_that_happens_to_prefix_a_sha() {
+    let s = Scratch::new();
+    // a 6-char SHA prefix stands in for a word-like name (`cafe`, `fade`) that a
+    // big repo's abbreviated SHAs would match at random — it must stay usable
+    let prefix = s.git(&["rev-parse", "HEAD"])[..6].to_string();
+    let out = s.tonic(&["add", &prefix]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(s.wt(&prefix).exists());
+}
