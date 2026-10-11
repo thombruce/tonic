@@ -458,18 +458,18 @@ fn worktree_path_for(repo: &Repo, cfg: &Config, branch: &str) -> PathBuf {
     }
 }
 
-/// Resolve `name` to an existing worktree path for `rm`/`cd`. A worktree is a
+/// Resolve `name` to an existing worktree entry for `rm`/`cd`. A worktree is a
 /// directory, so we don't rely on its current branch alone (it may be detached
 /// or switched, e.g. after `gh stack checkout`). Match, in order: the branch
 /// currently checked out; the path `add` would use for `name`; the worktree's
 /// directory basename.
-fn resolve_worktree(repo: &Repo, cfg: &Config, name: &str) -> Result<PathBuf> {
+fn resolve_worktree(repo: &Repo, cfg: &Config, name: &str) -> Result<Worktree> {
     let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
     let worktrees = parse_worktrees(&list);
 
     // 1. currently checked out on branch `name`.
     if let Some(w) = worktrees.iter().find(|w| !w.bare && w.label == name) {
-        return Ok(w.path.clone());
+        return Ok(w.clone());
     }
     // 2. the path add would create for `name` (handles detached/switched HEAD).
     // Canonicalize both sides the same way (falling back to raw) so a symlinked
@@ -480,14 +480,14 @@ fn resolve_worktree(repo: &Repo, cfg: &Config, name: &str) -> Result<PathBuf> {
         .iter()
         .find(|w| !w.bare && canon(&w.path) == expected)
     {
-        return Ok(w.path.clone());
+        return Ok(w.clone());
     }
     // 3. the worktree's directory basename (handles template drift / rm by dir).
     if let Some(w) = worktrees
         .iter()
         .find(|w| !w.bare && w.path.file_name().and_then(|n| n.to_str()) == Some(name))
     {
-        return Ok(w.path.clone());
+        return Ok(w.clone());
     }
     bail!("no worktree found for '{name}'")
 }
@@ -668,18 +668,15 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
 
-    let path = resolve_worktree(&repo, &cfg, branch)?;
+    let wt = resolve_worktree(&repo, &cfg, branch)?;
 
     // The branch the worktree actually has checked out (may differ from `branch`
-    // if resolved by dir/path, or be absent when detached). Read from git's
+    // if resolved by dir/path, or be absent when detached). Taken from git's
     // worktree registry, not by running git *in* the worktree, so it still works
     // when the folder was deleted by hand (#105). Drives the empty-branch
     // auto-clean.
-    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
-    let wt_branch = parse_worktrees(&list)
-        .into_iter()
-        .find(|w| w.path == path && !w.bare && !w.detached)
-        .map(|w| w.label);
+    let wt_branch = (!wt.detached).then_some(wt.label);
+    let path = wt.path;
 
     // Decide the empty-branch auto-clean *before* removal: `is_empty_branch` reads
     // via `repo.cwd()` (branch tips, the recorded base), which is the invoking
@@ -1771,7 +1768,7 @@ fn format_upstream(ahead: Option<usize>, behind: Option<usize>) -> String {
 pub fn cd(branch: &str) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
-    let path = resolve_worktree(&repo, &cfg, branch)?;
+    let path = resolve_worktree(&repo, &cfg, branch)?.path;
     ensure_present(&path, branch)?;
     println!("{}", path.display());
     Ok(())
@@ -2094,6 +2091,7 @@ const FISH_WRAPPER: &str = r#"function tonic
 end
 "#;
 
+#[derive(Clone)]
 struct Worktree {
     path: PathBuf,
     /// Branch name, or "detached". Display label; use `bare`/`detached` to test
