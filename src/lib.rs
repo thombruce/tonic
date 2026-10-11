@@ -240,6 +240,46 @@ fn branch_exists(repo: &Repo, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Refuse a new branch whose name already resolves to a commit — a tag, SHA,
+/// remote ref (`origin/x`) or `HEAD` (#106). git would create the branch at the
+/// start point, not at that commit, and leave the name ambiguous.
+fn refuse_ref_name(repo: &Repo, name: &str) -> Result<()> {
+    // Prints the full ref name for a ref (`refs/tags/2024`), nothing for a bare
+    // SHA, and fails for a name that resolves to nothing.
+    let Ok(full) = git_capture(
+        Some(repo.cwd()),
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--symbolic-full-name",
+            name,
+        ],
+    ) else {
+        return Ok(());
+    };
+    // ponytail: a bare SHA only counts at 7+ chars (git's default abbrev) —
+    // short word-like names (`cafe`, `fade`) would otherwise match a big repo's
+    // abbreviated SHAs at random. Refs (tags like `2024`) count at any length.
+    if full.is_empty() {
+        // `--verify` alone accepts any object; a blob/tree prefix isn't a commit.
+        // Length first, so a short name skips the second git call.
+        let commit = format!("{name}^{{commit}}");
+        if name.len() < 7
+            || git_capture(
+                Some(repo.cwd()),
+                &["rev-parse", "--verify", "--quiet", &commit],
+            )
+            .is_err()
+        {
+            return Ok(());
+        }
+    }
+    bail!(
+        "'{name}' already names a commit (a tag, SHA or other ref), not a branch\n       for a new branch from it: tonic add <new-name> --base {name}"
+    )
+}
+
 /// Append the git args for creating a new branch from HEAD (or from `base`).
 fn new_branch_args(args: &mut Vec<String>, branch: &str, path: &str, base: Option<&str>) {
     args.extend(["-b".into(), branch.into(), path.to_string()]);
@@ -510,6 +550,27 @@ pub fn add(
         }
     }
 
+    // #18: optionally fetch first so a branch that exists on a remote but hasn't
+    // been fetched is picked up (only on the remote-tracking path). Non-fatal —
+    // offline still resolves against existing refs.
+    if fetch && !force_new && !local {
+        let mut fargs = vec!["fetch", "--quiet"];
+        match remote {
+            Some(r) => fargs.push(r),
+            None => fargs.push("--all"),
+        }
+        if git_run(repo.cwd(), &fargs).is_err() {
+            eprintln!("warning: fetch failed; resolving with existing refs");
+        }
+    }
+
+    // Every non-local path creates a branch named `branch` (new or tracking).
+    // After the fetch (fetched tags count), before base resolution (so a refused
+    // add doesn't first warn about a base it never uses).
+    if !local {
+        refuse_ref_name(&repo, branch)?;
+    }
+
     // Start point for a new branch: --base flag, else the config `base` default.
     // The config only supplies the start point; it never forces a new branch
     // (checking out an existing/remote branch above is unaffected).
@@ -531,19 +592,6 @@ pub fn add(
         // No local branch: check remotes. #15 — if exactly one remote (origin
         // preferred) has it, create a local branch tracking it. Otherwise fall
         // through to a new branch from HEAD.
-        // #18: optionally fetch first so a branch that exists on a remote but
-        // hasn't been fetched is picked up. Non-fatal — offline still resolves
-        // against existing refs.
-        if fetch {
-            let mut fargs = vec!["fetch", "--quiet"];
-            match remote {
-                Some(r) => fargs.push(r),
-                None => fargs.push("--all"),
-            }
-            if git_run(repo.cwd(), &fargs).is_err() {
-                eprintln!("warning: fetch failed; resolving with existing refs");
-            }
-        }
         match choose_remote(&repo, branch, remote)? {
             Some(r) => {
                 args.extend([
