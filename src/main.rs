@@ -11,7 +11,7 @@ struct Cli {
 enum Cmd {
     /// Create a worktree for BRANCH
     Add {
-        /// Branch to check out in the new worktree
+        /// Branch to check out in the new worktree (with --detach: any tag, SHA or ref)
         branch: String,
         /// Create BRANCH as a new branch (from HEAD unless --base)
         #[arg(short = 'b', long = "new-branch")]
@@ -26,6 +26,9 @@ enum Cmd {
         /// fetched is picked up
         #[arg(long)]
         fetch: bool,
+        /// Create a detached worktree at BRANCH, which may be any tag, SHA or ref
+        #[arg(long, conflicts_with_all = ["new_branch", "base", "remote"])]
+        detach: bool,
     },
     /// List all worktrees
     #[command(visible_alias = "ls")]
@@ -95,12 +98,14 @@ fn main() -> anyhow::Result<()> {
             base,
             remote,
             fetch,
+            detach,
         } => tonic::add(
             &branch,
             new_branch,
             base.as_deref(),
             remote.as_deref(),
             fetch,
+            detach,
         ),
         Cmd::List {
             verbose,
