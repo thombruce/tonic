@@ -46,6 +46,11 @@ enum Cmd {
         /// Branch whose worktree path to print
         branch: String,
     },
+    /// Switch to BRANCH: cd to its worktree if it has one, else check it out in place
+    Checkout {
+        /// Branch to switch to
+        branch: String,
+    },
     /// Print a shell function for `cd` integration; eval it in your shell rc
     ShellInit {
         /// Shell to emit the wrapper for
@@ -112,6 +117,7 @@ fn main() -> anyhow::Result<()> {
             tonic::list(format, verbose)
         }
         Cmd::Cd { branch } => tonic::cd(&branch),
+        Cmd::Checkout { branch } => tonic::checkout(&branch),
         Cmd::ShellInit { shell } => tonic::shell_init(&shell),
         Cmd::Completions { shell } => {
             // clap glue, not domain logic: generate needs the derived command tree.

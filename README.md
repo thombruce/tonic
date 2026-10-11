@@ -59,6 +59,7 @@ Without it `tonic` still works — `tonic add` just prints the new worktree path
 tonic add <branch> [-b] [--base <ref>] [--remote <name>] [--fetch]   # create a worktree
 tonic list [-v|--porcelain|--json]  # list worktrees (alias: ls; -v: full breakdown; --porcelain/--json: machine-readable)
 tonic cd  <branch>             # print a worktree's path (cd's into it via shell integration)
+tonic checkout <branch>        # cd to the branch's worktree if it has one, else check it out in place
 tonic stack                    # show the current worktree's stack (tip at top, trunk at bottom)
 tonic up / down                # move one branch up (toward the tip) / down (toward the trunk) the stack
 tonic top / bottom             # jump to the tip / base of the stack
@@ -184,6 +185,12 @@ in-place checkout is refused when the worktree has uncommitted changes to
 moves your work onto another branch. Untracked files are left alone (they carry
 across harmlessly, as they do with plain `git checkout`). A lateral step (to a
 branch that has its own worktree) never touches your files.
+
+`tonic checkout <branch>` is the same cd-or-checkout move for **any** branch,
+not just a stack step: "put me on this branch, wherever it lives." It fills the
+gap between `tonic cd` (existing worktrees only) and plain `git checkout` (which
+refuses a branch checked out in another worktree). The same dirty-tree guard
+applies to the in-place case.
 
 ### How `tonic add <branch>` resolves the branch
 
