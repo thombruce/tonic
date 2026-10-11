@@ -103,7 +103,7 @@ Worktrees are **sibling directories**, so `list` stays flat. Each row leads with
 the **worktree directory** (relative to where they live, not a long absolute
 path), then its branch shown inside its inferred lineage. The row's own branch is
 named and flagged with `*`; when it's stacked, its ancestors precede it — e.g.
-`▸ app-b   main → a → *b` for a branch on top of `a` on top of `main`. A branch
+`» app-b   main → a → *b` for a branch on top of `a` on top of `main`. A branch
 sitting directly on the trunk shows bare (`*foo`); children stacked on it
 continue the chain — ` → child` for a single child, ` → [N]` for a fork of N,
 even when that child has no worktree of its own. Lineage is inferred from the
@@ -112,7 +112,7 @@ commit of the branch it was created from, so the graph alone can't tell which is
 the parent — for branches **tonic created**, it records the parent (in git's own
 `branch.<name>` config, which git prunes when the branch is deleted or renamed)
 so the lineage is right immediately. An empty branch created outside tonic shows
-bare until it has a commit of its own. The current worktree is marked `▸`.
+bare until it has a commit of its own. The current worktree is marked `»`.
 
 Each row ends with a compact status, shown only when it applies, following the
 usual git-prompt conventions:
@@ -130,7 +130,7 @@ For scripts and agents, `tonic list --json` emits an array of worktree objects
 and `--porcelain` emits git-style `key value` records (blank-line separated, one
 block per worktree). Both are **lossless** — full branch names, absolute paths,
 and structured `lineage` / `children` / `status` / `ahead` / `behind` fields —
-so none of the compact human decoration (`*`, `▸`, relative paths) leaks in.
+so none of the compact human decoration (`*`, `»`, relative paths) leaks in.
 
 ```console
 $ tonic list --porcelain
@@ -160,13 +160,13 @@ bottom — so you can see what you're navigating:
 
 ```console
 $ tonic stack
-▸ feature-c
+» feature-c
   feature-b
   feature-a
   main
 ```
 
-The current branch is marked `▸`. The climb follows single children; where a
+The current branch is marked `»`. The climb follows single children; where a
 branch forks, the view notes the children rather than guessing a path. Unlike
 `list` (one row per *worktree*, flat), this is one row per *branch* in your stack.
 
