@@ -81,3 +81,38 @@ fn rm_current_skips_a_parent_whose_folder_is_missing() {
         stdout(&out)
     );
 }
+
+#[test]
+fn rm_of_a_missing_folder_still_cleans_up_an_empty_branch() {
+    let s = Scratch::new();
+    s.tonic(&["add", "e"]); // no commits of its own → empty, auto-cleaned on rm
+    std::fs::remove_dir_all(s.wt("e")).unwrap();
+    let out = s.tonic(&["rm", "e"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        s.git(&["branch", "--list", "e"]),
+        "",
+        "empty branch left behind"
+    );
+}
+
+#[test]
+fn bare_rm_current_never_returns_a_missing_or_removed_worktree() {
+    let s = Scratch::bare();
+    s.tonic(&["add", "a"]);
+    std::fs::remove_dir_all(&s.repo).unwrap(); // the trunk's main/ folder, by hand
+    // removing a from inside: main/ is gone and a is the one being removed, so
+    // the only place left to land is the bare dir itself
+    let out = s.tonic_in(&s.wt("a"), &["rm", "a"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let back = std::path::PathBuf::from(stdout(&out).trim());
+    assert!(
+        back.exists(),
+        "return path doesn't exist: {}",
+        back.display()
+    );
+    assert_eq!(
+        back.canonicalize().unwrap(),
+        s.bare_dir().canonicalize().unwrap()
+    );
+}

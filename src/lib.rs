@@ -671,11 +671,15 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
     let path = resolve_worktree(&repo, &cfg, branch)?;
 
     // The branch the worktree actually has checked out (may differ from `branch`
-    // if resolved by dir/path, or be absent when detached). Captured before
-    // removal — the path is gone afterwards. Drives the empty-branch auto-clean.
-    let wt_branch = git_capture(Some(&path), &["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .ok()
-        .filter(|s| !s.is_empty());
+    // if resolved by dir/path, or be absent when detached). Read from git's
+    // worktree registry, not by running git *in* the worktree, so it still works
+    // when the folder was deleted by hand (#105). Drives the empty-branch
+    // auto-clean.
+    let list = git_capture(Some(repo.cwd()), &["worktree", "list", "--porcelain"])?;
+    let wt_branch = parse_worktrees(&list)
+        .into_iter()
+        .find(|w| w.path == path && !w.bare && !w.detached)
+        .map(|w| w.label);
 
     // Decide the empty-branch auto-clean *before* removal: `is_empty_branch` reads
     // via `repo.cwd()` (branch tips, the recorded base), which is the invoking
@@ -699,7 +703,7 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
     // Where to cd after removing the current worktree — the parent worktree if
     // stacked, else the trunk (#42). Computed before removal (cwd still alive).
     let return_path =
-        removing_current.then(|| current_return_path(&repo, &cfg, wt_branch.as_deref()));
+        removing_current.then(|| current_return_path(&repo, &cfg, wt_branch.as_deref(), &path));
 
     // pre_remove is fatal: nothing is removed yet, so a failing hook blocks rm.
     // A folder deleted by hand can't host the hooks (they run inside it), and
@@ -756,19 +760,25 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
 /// A worktree to return to after removing the current one: the main working tree
 /// for a normal repo; for a bare repo the `main`/`master` (or any remaining)
 /// worktree, since `repo.main` there is the bare dir, which has no checkout (#35).
-fn home_checkout(repo: &Repo, cfg: &Config) -> PathBuf {
+/// Never `removing` (still listed, since this runs before removal) or a worktree
+/// whose folder was deleted by hand (#105).
+fn home_checkout(repo: &Repo, cfg: &Config, removing: &Path) -> PathBuf {
     if !repo.bare {
         return repo.main.clone();
     }
     // Run from repo.main (the bare dir, which exists) — the current worktree we
     // just removed may be gone.
     if let Ok(list) = git_capture(Some(&repo.main), &["worktree", "list", "--porcelain"]) {
+        let usable = |p: &Path| p != removing && p.exists();
         for branch in trunk_candidates(cfg) {
-            if let Some(p) = parse_worktree(&list, branch) {
+            if let Some(p) = parse_worktree(&list, branch).filter(|p| usable(p)) {
                 return p;
             }
         }
-        if let Some(w) = parse_worktrees(&list).into_iter().find(|w| !w.bare) {
+        if let Some(w) = parse_worktrees(&list)
+            .into_iter()
+            .find(|w| !w.bare && usable(&w.path))
+        {
             return w.path;
         }
     }
@@ -783,7 +793,12 @@ fn home_checkout(repo: &Repo, cfg: &Config) -> PathBuf {
 /// lineage chain (so an empty branch's parent is right too, #78/#83). Must be
 /// called **before** removal — `lineage`/`branch_tips` read `repo.cwd()`, which is
 /// the worktree about to vanish.
-fn current_return_path(repo: &Repo, cfg: &Config, branch: Option<&str>) -> PathBuf {
+fn current_return_path(
+    repo: &Repo,
+    cfg: &Config,
+    branch: Option<&str>,
+    removing: &Path,
+) -> PathBuf {
     if let Some(b) = branch {
         let tips = branch_tips(repo);
         if let Some(default) = default_branch(repo, cfg, &tips) {
@@ -810,7 +825,7 @@ fn current_return_path(repo: &Repo, cfg: &Config, branch: Option<&str>) -> PathB
             }
         }
     }
-    home_checkout(repo, cfg)
+    home_checkout(repo, cfg, removing)
 }
 
 /// Whether `branch` is safe to auto-delete after removing its worktree (#52):
