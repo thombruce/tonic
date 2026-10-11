@@ -96,6 +96,12 @@ including one stacked on another branch), it's deleted too, since nothing is los
 A branch that carries its own commits is always kept; use `-d` to delete it
 explicitly.
 
+If a worktree's folder was deleted by hand (without `rm`), `cd`, `checkout` and
+the stack-navigation commands refuse it rather than print a path you can't `cd`
+into, and point you at `tonic rm <name>`, which cleans up the leftover
+registration. `pre_remove` hooks are skipped in that case, since they run inside
+the folder (with a warning, so you can run any teardown by hand).
+
 When you `rm` the worktree you're standing in, tonic cd's you out of the doomed
 directory — to the **parent worktree** if the removed branch was stacked on one
 (you drop back a level down the stack), otherwise to the main worktree.
