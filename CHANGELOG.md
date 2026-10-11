@@ -1,14 +1,21 @@
 # Changelog
 
-Notable changes per release. Earlier releases: see the [GitHub releases](https://github.com/thombruce/tonic/releases).
+All notable changes to this project are documented in this file.
 
-## 0.4.0 (2026-10-11)
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Releases before 0.4.0 are described in the
+[GitHub releases](https://github.com/thombruce/tonic/releases).
+
+## [Unreleased]
+
+## [0.4.0] - 2026-10-11
 
 Three new ways to get to work: switch to any branch wherever it lives, open a
 pull request in its own worktree, and take a detached snapshot of a tag or
 commit. Plus fixes for tag-named branches and hand-deleted worktree folders.
 
-### New
+### Added
 
 **`tonic checkout <branch>`**: put me on this branch, wherever it lives (#89, #108).
 - If the branch has a worktree, tonic `cd`s you there.
@@ -63,8 +70,5 @@ building an old version beside your current work.
   - Removing the worktree you're in never sends you to a missing folder or to
     the worktree being removed.
 
-### Pull requests
-
-#103, #104, #109, #110, #111, #115, #118
-
-**Full Changelog**: https://github.com/thombruce/tonic/compare/v0.3.1...v0.4.0
+[Unreleased]: https://github.com/thombruce/tonic/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/thombruce/tonic/compare/v0.3.1...v0.4.0
