@@ -38,7 +38,7 @@ fn stack_lists_the_chain_tip_to_trunk() {
     );
     // current branch is marked
     assert!(
-        out.lines().any(|l| l.contains('▸') && l.contains('b')),
+        out.lines().any(|l| l.contains('»') && l.contains('b')),
         "current not marked:\n{out}"
     );
 }
@@ -62,7 +62,7 @@ fn stack_climbs_above_a_mid_stack_branch() {
         "trunk should be at the bottom:\n{out}"
     );
     assert!(
-        out.lines().any(|l| l.contains('▸') && l.contains('a')),
+        out.lines().any(|l| l.contains('»') && l.contains('a')),
         "current branch a not marked:\n{out}"
     );
 }

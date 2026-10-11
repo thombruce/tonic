@@ -949,7 +949,7 @@ fn collect_views(repo: &Repo, cfg: &Config) -> Result<Vec<WorktreeView>> {
 /// The default human view (#71): one row per worktree, worktree **dir first**
 /// (the aligned left column, relative to `base`), then the branch folded into its
 /// own lineage — named and flagged with `*`, not a separate column. The current
-/// worktree is marked `▸`. Verbose expands the trailing status and shows the
+/// worktree is marked `»`. Verbose expands the trailing status and shows the
 /// full, uncompacted lineage (compact mode elides/caps it, #99).
 fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
     let dirs: Vec<String> = views.iter().map(|v| short_path(&v.abs, base)).collect();
@@ -968,7 +968,7 @@ fn render_human(views: &[WorktreeView], verbose: bool, base: &Path) {
         }
 
         let marker = if v.current {
-            format!("{}", "▸".if_supports_color(Stream::Stdout, |t| t.green()))
+            format!("{}", "»".if_supports_color(Stream::Stdout, |t| t.green()))
         } else {
             " ".to_string()
         };
@@ -1104,7 +1104,7 @@ fn status_cell(v: &WorktreeView, verbose: bool) -> String {
 /// tip at top, trunk at bottom — rather than `list`'s flat per-worktree view.
 /// Shows what `up`/`down`/`top`/`bottom` move along. Reuses the same inference
 /// (record-aware `lineage_cached` for ancestors, `direct_children` for the climb)
-/// — no new source of truth. The current branch is marked `▸`. The climb follows
+/// — no new source of truth. The current branch is marked `»`. The climb follows
 /// single children; a fork stops it with a note naming the children (as `up`/`top`
 /// do). (A per-branch has-a-worktree flag is deferred — see #90.)
 pub fn stack() -> Result<()> {
@@ -1162,7 +1162,7 @@ pub fn stack() -> Result<()> {
     for b in spine.iter().rev() {
         let is_current = *b == current;
         let marker = if is_current {
-            format!("{}", "▸".if_supports_color(Stream::Stdout, |t| t.green()))
+            format!("{}", "»".if_supports_color(Stream::Stdout, |t| t.green()))
         } else {
             " ".to_string()
         };

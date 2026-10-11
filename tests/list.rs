@@ -334,9 +334,9 @@ fn paths_are_relative_and_current_is_marked() {
     let s = Scratch::new();
     s.tonic(&["add", "a"]);
     let out = stdout(&s.tonic(&["list"]));
-    // current worktree carries the `▸` marker (no longer `*`, which now marks
+    // current worktree carries the `»` marker (no longer `*`, which now marks
     // self-position in the chain).
-    assert!(out.contains('▸'), "current worktree not marked:\n{out}");
+    assert!(out.contains('»'), "current worktree not marked:\n{out}");
     // paths are shown relative to the base, not as absolute paths.
     assert!(out.contains("repo-a"), "worktree dir name missing:\n{out}");
     assert!(
