@@ -492,6 +492,19 @@ fn resolve_worktree(repo: &Repo, cfg: &Config, name: &str) -> Result<PathBuf> {
     bail!("no worktree found for '{name}'")
 }
 
+/// Refuse to hand the shell wrapper a worktree path whose folder was deleted by
+/// hand but not yet pruned (#105) — its `cd` would fail. `tonic rm` cleans it up
+/// (`git worktree remove` accepts a missing folder).
+fn ensure_present(path: &Path, name: &str) -> Result<()> {
+    if !path.exists() {
+        bail!(
+            "worktree for '{name}' is missing at {} (folder deleted?)\n       clean it up: tonic rm {name}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // add
 // ---------------------------------------------------------------------------
@@ -689,7 +702,13 @@ pub fn rm(branch: &str, force: bool, delete_branch: bool) -> Result<()> {
         removing_current.then(|| current_return_path(&repo, &cfg, wt_branch.as_deref()));
 
     // pre_remove is fatal: nothing is removed yet, so a failing hook blocks rm.
-    run_hooks(&cfg, "pre_remove", &repo, branch, &path, true)?;
+    // A folder deleted by hand can't host the hooks (they run inside it), and
+    // running them elsewhere could act on the wrong checkout — skip them (#105).
+    if path.exists() {
+        run_hooks(&cfg, "pre_remove", &repo, branch, &path, true)?;
+    } else {
+        eprintln!("warning: worktree folder is already gone; skipping pre_remove hooks");
+    }
 
     // Run git from the main worktree, not the target: if we're removing the
     // current worktree, its dir is about to disappear from under us.
@@ -781,7 +800,11 @@ fn current_return_path(repo: &Repo, cfg: &Config, branch: Option<&str>) -> PathB
             // predecessor of `b` in its root-anchored chain = its parent branch
             if let Some(parent) = chain.iter().rev().nth(1) {
                 // reuse the already-parsed worktrees rather than re-parsing `list`
-                if let Some(w) = worktrees.iter().find(|w| !w.bare && &w.label == parent) {
+                // (skip a parent whose folder was deleted — it can't be cd'd to, #105)
+                if let Some(w) = worktrees
+                    .iter()
+                    .find(|w| !w.bare && &w.label == parent && w.path.exists())
+                {
                     return w.path.clone(); // parent has a worktree → drop back one level
                 }
             }
@@ -1734,6 +1757,7 @@ pub fn cd(branch: &str) -> Result<()> {
     let repo = Repo::discover()?;
     let cfg = Config::load(&repo)?;
     let path = resolve_worktree(&repo, &cfg, branch)?;
+    ensure_present(&path, branch)?;
     println!("{}", path.display());
     Ok(())
 }
@@ -1963,6 +1987,8 @@ fn goto(repo: &Repo, worktrees: &[Worktree], branch: &str) -> Result<()> {
         .iter()
         .find(|w| !w.bare && !w.detached && w.label == branch)
     {
+        // not an in-place fallback: git refuses a branch held by a missing worktree
+        ensure_present(&w.path, branch)?;
         eprintln!("{check} {branch}: switched to its worktree");
         // stdout path only in the cd case — the wrapper cd's when it's non-empty.
         println!("{}", w.path.display());
